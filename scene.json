@@ -1,0 +1,98 @@
+{
+  "ecs7": true,
+  "runtimeVersion": "7",
+  "display": {
+    "title": "Alienscrapyard",
+    "description": "Build together or fall apart. In AlienScrap, you and other players race against the clock to assemble a mystery structure from alien scrap pieces. Place the right piece in the right slot before time runs out.",
+    "favicon": "favicon_asset",
+    "navmapThumbnail": "assets/scene/Images/Alienscrapyard_final_512x512.png"
+  },
+  "owner": "",
+  "contact": {
+    "name": "i2C",
+    "email": ""
+  },
+  "main": "bin/index.js",
+  "tags": [
+    "game"
+  ],
+  "scene": {
+    "base": "0,0",
+    "parcels": [
+      "-1,-1",
+      "0,-1",
+      "1,-1",
+      "2,-1",
+      "3,-1",
+      "-1,0",
+      "0,0",
+      "1,0",
+      "2,0",
+      "3,0",
+      "0,1",
+      "1,1",
+      "-1,1",
+      "2,1",
+      "3,1",
+      "-1,2",
+      "0,2",
+      "1,2",
+      "2,2",
+      "3,2",
+      "-1,3",
+      "0,3",
+      "1,3",
+      "2,3",
+      "3,3"
+    ]
+  },
+  "spawnPoints": [
+    {
+      "name": "SpawnAlien",
+      "default": true,
+      "position": {
+        "x": [
+          22,
+          26
+        ],
+        "y": [
+          1,
+          1
+        ],
+        "z": [
+          10,
+          12
+        ]
+      },
+      "cameraTarget": {
+        "x": 24,
+        "y": 2,
+        "z": 24
+      }
+    }
+  ],
+  "requiredPermissions": [
+    "ALLOW_TO_TRIGGER_AVATAR_EMOTE",
+    "ALLOW_TO_MOVE_PLAYER_INSIDE_SCENE"
+  ],
+  "featureToggles": {
+    "voiceChat": "enabled",
+    "portableExperiences": "enabled",
+    "nearbyVoiceChat": "enabled"
+  },
+  "creator": "",
+  "authoritativeMultiplayer": true,
+  "logsPermissions": [
+    "0x71a604439106269734935f82460efcc58cca84bb",
+    "0xc49c6d50bb7baf4bfda7a144be2c681ed5e3341e"
+  ],
+  "worldConfiguration": {
+    "name": "alienscrapyard.dcl.eth"
+  },
+  "skyboxConfig": {},
+  "source": {
+    "origin": "creator-hub",
+    "projectId": "e6852128-eb30-4234-bc00-5c4a71b8cb67"
+  },
+  "landscapeTerrain": true
+}
