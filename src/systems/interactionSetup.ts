@@ -9,7 +9,8 @@ import {
   MeshCollider,
   MeshRenderer,
   pointerEventsSystem,
-  Transform
+  Transform,
+  UiCanvasInformation
 } from '@dcl/sdk/ecs'
 import { Color4, Quaternion, Vector3 } from '@dcl/sdk/math'
 import { getClientSnapshot, requestAttach } from '../game/gameState'
@@ -18,18 +19,18 @@ import {
   COUNTDOWN_SECONDS,
   GLB_SCALE,
   PART_GLB,
+  PLACEMENT_COOLDOWN_MS,
   PERFORMANCE_DURATION_SECONDS,
   PartType,
   SCENE_CENTER
 } from '../shared/constants'
 import { getTemplate, SlotDefinition } from '../shared/templates'
-import { onWrongPart, playSuccess, showFeedback } from '../ui'
+import { onWrongPart, playSuccess, showFeedback, startPlacementCooldown } from '../ui'
 
 const visualEntities = new Set<Entity>()
 const recentClicks = new Map<string, number>()
-const CLICK_COOLDOWN_MS = 400
 const PERFECT_EXPLOSION_SECONDS = COUNTDOWN_SECONDS + PERFORMANCE_DURATION_SECONDS + 0.55
-const SPARK_LIFETIME_SECONDS = 1.35
+const SPARK_LIFETIME_SECONDS = 1.9
 
 interface SolidVisual {
   entity: Entity
@@ -70,6 +71,14 @@ let arenaEntity: Entity | undefined
 let renderedStateKey = ''
 let getSelectedPart: () => PartType = () => 'CUBE'
 
+function mobileLiteMode(): boolean {
+  const canvasInfo = UiCanvasInformation.getOrNull(engine.RootEntity)
+  return canvasInfo !== null && (
+    canvasInfo.width < 1500 ||
+    canvasInfo.height < 850 ||
+    canvasInfo.devicePixelRatio >= 1.75
+  )
+}
 const GHOST_COLOR: Record<PartType, Color4> = {
   CUBE: Color4.create(0.1, 0.3, 1, 0.22),
   CYLINDER: Color4.create(1, 0.1, 0.1, 0.22),
@@ -197,6 +206,30 @@ function createSolid(slot: SlotDefinition, index: number): void {
   })
 }
 
+function createOtherPlayerDim(slot: SlotDefinition): void {
+  const basePosition = slotPosition(slot)
+  const baseScale = slotScale(slot)
+  const overlay = trackEntity(engine.addEntity())
+  Transform.create(overlay, {
+    position: Vector3.create(basePosition.x, basePosition.y + baseScale.y * 0.05, basePosition.z),
+    scale: Vector3.create(baseScale.x * 2.1, baseScale.y * 2.1, baseScale.z * 2.1),
+    rotation: partRotation(slot.requiredPart)
+  })
+
+  if (slot.requiredPart === 'CUBE') MeshRenderer.setBox(overlay)
+  else if (slot.requiredPart === 'CYLINDER') MeshRenderer.setCylinder(overlay)
+  else MeshRenderer.setCylinder(overlay, 0, 0.5)
+
+  Material.setPbrMaterial(overlay, {
+    albedoColor: Color4.create(0.015, 0.02, 0.04, 0.58),
+    transparencyMode: MaterialTransparencyMode.MTM_ALPHA_BLEND,
+    emissiveColor: Color4.create(0, 0.04, 0.08, 1),
+    emissiveIntensity: 0.2,
+    metallic: 0,
+    roughness: 0.85
+  })
+}
+
 function flashSlot(slot: SlotDefinition, color: Color4): void {
   const entity = trackEntity(engine.addEntity())
   Transform.create(entity, {
@@ -226,8 +259,10 @@ function onSlotClick(slot: SlotDefinition): void {
     return
   }
 
+  const now = Date.now()
+  const noCooldownActive = now < snapshot.noCooldownUntil
   const lastClick = recentClicks.get(slot.slotId) ?? 0
-  if (Date.now() - lastClick < CLICK_COOLDOWN_MS) return
+  if (!noCooldownActive && now - lastClick < PLACEMENT_COOLDOWN_MS.manual[slot.requiredPart]) return
 
   const selectedPart = getSelectedPart()
   if (selectedPart !== slot.requiredPart) {
@@ -236,10 +271,11 @@ function onSlotClick(slot: SlotDefinition): void {
     return
   }
 
-  recentClicks.set(slot.slotId, Date.now())
+  recentClicks.set(slot.slotId, now)
   flashSlot(slot, Color4.create(1, 1, 0.5, 1))
   playSuccess()
-  requestAttach(slot.slotId, selectedPart)
+  if (!noCooldownActive) startPlacementCooldown(selectedPart, 'manual')
+  requestAttach(slot.slotId, selectedPart, 'manual')
 }
 
 function setupArena(): void {
@@ -262,7 +298,11 @@ export function setupEntities(selectedPartProvider: () => PartType): void {
   setupArena()
 
   room.onMessage('attachResult', (data) => {
-    if (data.ok) return
+    if (data.ok) {
+      const slot = getTemplate(getClientSnapshot().templateId)?.find((item) => item.slotId === data.slotId)
+      if (slot) flashSlot(slot, Color4.create(0.2, 1, 0.85, 1))
+      return
+    }
     recentClicks.delete(data.slotId)
     if (data.reason === 'wrong_part') {
       const slot = getTemplate(getClientSnapshot().templateId)?.find((item) => item.slotId === data.slotId)
@@ -274,7 +314,7 @@ export function setupEntities(selectedPartProvider: () => PartType): void {
       showFeedback('Joining next round')
       return
     }
-    showFeedback(data.reason === 'slot_occupied' ? 'Slot already taken' : 'Try again')
+    showFeedback(data.reason === 'slot_occupied' ? 'Slot already taken' : data.reason === 'cooldown' ? 'Cooling down' : 'Try again')
   })
 }
 
@@ -293,6 +333,7 @@ export function reconcileScene(): void {
     snapshot.templateId,
     snapshot.phase,
     snapshot.occupiedMask,
+    snapshot.ownOccupiedMask,
     snapshot.playerStatus
   ].join(':')
   if (stateKey === renderedStateKey) return
@@ -307,8 +348,12 @@ export function reconcileScene(): void {
   for (let index = 0; index < slots.length; index++) {
     const slot = slots[index]
     const occupied = ((snapshot.occupiedMask >> index) & 1) === 1
+    const owned = ((snapshot.ownOccupiedMask >> index) & 1) === 1
     if (occupied) {
       createSolid(slot, index)
+      if (snapshot.phase === 'BUILD' && snapshot.playerStatus === 'ACTIVE') {
+        if (!owned && !mobileLiteMode()) createOtherPlayerDim(slot)
+      }
     } else if (showAvailableSlots) {
       createGhost(slot)
       if (canInteract) createHitbox(slot)
@@ -508,6 +553,41 @@ function celebrationPose(
   return pose
 }
 
+function spawnPlacementExplosion(slot: SlotDefinition): void {
+  const origin = slotPosition(slot)
+  const color = GHOST_EMISSIVE[slot.requiredPart]
+  const count = mobileLiteMode() ? 8 : 32
+
+  for (let index = 0; index < count; index++) {
+    const angle = index * 2.399963229728653
+    const entity = trackEntity(engine.addEntity())
+    const scale = 0.18 + (index % 4) * 0.045
+    Transform.create(entity, {
+      position: Vector3.create(origin.x, origin.y, origin.z),
+      rotation: Quaternion.fromEulerDegrees(index * 19, index * 31, index * 13),
+      scale: Vector3.create(scale * 0.55, scale * 2.8, scale * 0.55)
+    })
+    MeshRenderer.setBox(entity)
+    Material.setPbrMaterial(entity, {
+      albedoColor: color,
+      emissiveColor: color,
+      emissiveIntensity: 9,
+      metallic: 0.1,
+      roughness: 0.18
+    })
+    sparkVisuals.push({
+      entity,
+      velocity: Vector3.create(
+        Math.cos(angle) * (2.1 + (index % 5) * 0.28),
+        2.6 + (index % 6) * 0.32,
+        Math.sin(angle) * (2.1 + (index % 5) * 0.28)
+      ),
+      age: 0,
+      scale
+    })
+  }
+}
+
 function clearSparks(): void {
   for (const spark of sparkVisuals) removeVisualEntity(spark.entity)
   sparkVisuals.length = 0
@@ -521,7 +601,7 @@ function spawnPerfectExplosion(): void {
     Color4.create(1, 0.25, 0.72, 1),
     Color4.create(0.45, 0.65, 1, 1)
   ]
-  const count = Math.min(36, solidVisuals.length * 2)
+  const count = Math.min(mobileLiteMode() ? 12 : 36, solidVisuals.length * 2)
 
   for (let index = 0; index < count; index++) {
     const source = solidVisuals[index % solidVisuals.length]
@@ -597,6 +677,7 @@ function cinematicPhaseOffset(phase: string): number {
 }
 
 export function perfectTemplateAnimationSystem(dt: number): void {
+  const safeDt = Math.min(Math.max(dt, 0), 0.1)
   const snapshot = getClientSnapshot()
   const cinematicPhase = snapshot.phase === 'COUNTDOWN' || snapshot.phase === 'PERFORM' || snapshot.phase === 'RESET'
   const shouldAnimate = cinematicPhase && snapshot.performanceType === 'PERFECT' && snapshot.cinematicEligible
@@ -606,11 +687,12 @@ export function perfectTemplateAnimationSystem(dt: number): void {
       restoreSolidVisuals()
       clearSparks()
       celebrationActive = false
+    } else {
+      updateSparks(safeDt)
     }
     return
   }
 
-  const safeDt = Math.min(Math.max(dt, 0), 0.1)
   if (celebrationRound !== snapshot.roundNumber) {
     celebrationRound = snapshot.roundNumber
     celebrationPhase = snapshot.phase
@@ -625,7 +707,7 @@ export function perfectTemplateAnimationSystem(dt: number): void {
   celebrationPhaseElapsed += safeDt
 
   const elapsed = cinematicPhaseOffset(snapshot.phase) + celebrationPhaseElapsed
-  if (!celebrationExploded && elapsed >= PERFECT_EXPLOSION_SECONDS) {
+  if (false && !celebrationExploded && elapsed >= PERFECT_EXPLOSION_SECONDS) {
     celebrationExploded = true
     spawnPerfectExplosion()
   }
@@ -653,3 +735,4 @@ export function clearAllVisuals(): void {
   clearVisualEntities()
   renderedStateKey = ''
 }
+

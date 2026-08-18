@@ -13,11 +13,15 @@ export const Messages = {
   completeTutorial: Schemas.Map({ joinAfter: Schemas.Boolean }),
 
   requestLeaderboards: Schemas.Map({ requested: Schemas.Boolean }),
+  buyArtifact: Schemas.Map({ artifactType: Schemas.String }),
+  equipArtifact: Schemas.Map({ inventoryIndex: Schemas.Int }),
+  useArtifact: Schemas.Map({ slotIndex: Schemas.Int }),
 
   // Piece placement request.
   attach: Schemas.Map({
     slotId: Schemas.String,
-    partType: Schemas.String
+    partType: Schemas.String,
+    mode: Schemas.String
   }),
 
   // Piece placement result.
@@ -28,6 +32,11 @@ export const Messages = {
     required: Schemas.String
   }),
 
+  artifactResult: Schemas.Map({
+    ok: Schemas.Boolean,
+    reason: Schemas.String
+  }),
+
   // Targeted player status.
   playerUpdate: Schemas.Map({
     name: Schemas.String,
@@ -35,14 +44,25 @@ export const Messages = {
     sessionPoints: Schemas.Int,
     roundPoints: Schemas.Int,
     correctPieces: Schemas.Int,
+    ownOccupiedMask: Schemas.Int,
     profileLoaded: Schemas.Boolean,
     tutorialCompleted: Schemas.Boolean,
+    lastTutorialDay: Schemas.Int,
     totalXp: Schemas.Int,
     level: Schemas.Int,
     roundsPlayed: Schemas.Int,
     perfectBuilds: Schemas.Int,
     mvpAwards: Schemas.Int,
-    sessionLeaderAwards: Schemas.Int
+    sessionLeaderAwards: Schemas.Int,
+    crystals: Schemas.Int,
+    cubeScrap: Schemas.Int,
+    cylinderScrap: Schemas.Int,
+    coneScrap: Schemas.Int,
+    equippedArtifactsJson: Schemas.String,
+    artifactInventoryJson: Schemas.String,
+    artifactUsesThisRound: Schemas.Int,
+    noCooldownUntil: Schemas.Number,
+    doublePlaceUntil: Schemas.Number
   }),
 
   leaderboardUpdate: Schemas.Map({
@@ -74,3 +94,5 @@ export const Messages = {
 }
 
 export const room = registerMessages(Messages)
+
+

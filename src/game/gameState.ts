@@ -1,6 +1,6 @@
 import { engine, Transform } from '@dcl/sdk/ecs'
 import { room } from '../shared/alienMessages'
-import { HEARTBEAT_SECONDS, RoundPhase, STALE_THRESHOLD_MS } from '../shared/constants'
+import { ArtifactType, HEARTBEAT_SECONDS, PlacementMode, RoundPhase, STALE_THRESHOLD_MS } from '../shared/constants'
 
 export type PlayerStatus = 'SPECTATOR' | 'QUEUED' | 'ACTIVE'
 
@@ -15,17 +15,29 @@ export interface RosterPlayer {
 }
 
 export interface LeaderboardPlayer {
+  address?: string
   name: string
   points: number
   level: number
   rounds: number
   mvps: number
+  pieces?: number
+  perfects?: number
+  excellence?: number
+  dominance?: number
 }
 
 export interface PersistentLeaderboards {
   daily: LeaderboardPlayer[]
   weekly: LeaderboardPlayer[]
   total: LeaderboardPlayer[]
+  mvp: LeaderboardPlayer[]
+  rounds: LeaderboardPlayer[]
+  level: LeaderboardPlayer[]
+  perfect: LeaderboardPlayer[]
+  pieces: LeaderboardPlayer[]
+  excellence: LeaderboardPlayer[]
+  dominance: LeaderboardPlayer[]
   generatedAt: number
 }
 
@@ -63,14 +75,25 @@ export interface ClientSnapshot {
   sessionPoints: number
   roundPoints: number
   correctPieces: number
+  ownOccupiedMask: number
   profileLoaded: boolean
   tutorialCompleted: boolean
+  lastTutorialDay: number
   totalXp: number
   level: number
   roundsPlayed: number
   perfectBuilds: number
   mvpAwards: number
   sessionLeaderAwards: number
+  crystals: number
+  cubeScrap: number
+  cylinderScrap: number
+  coneScrap: number
+  equippedArtifacts: ArtifactType[]
+  artifactInventory: ArtifactType[]
+  artifactUsesThisRound: number
+  noCooldownUntil: number
+  doublePlaceUntil: number
   leaderboards: PersistentLeaderboards
   leaderboardsLoading: boolean
   cinematicEligible: boolean
@@ -105,15 +128,38 @@ function emptySnapshot(): ClientSnapshot {
     sessionPoints: 0,
     roundPoints: 0,
     correctPieces: 0,
+    ownOccupiedMask: 0,
     profileLoaded: false,
     tutorialCompleted: false,
+    lastTutorialDay: 0,
     totalXp: 0,
     level: 1,
     roundsPlayed: 0,
     perfectBuilds: 0,
     mvpAwards: 0,
     sessionLeaderAwards: 0,
-    leaderboards: { daily: [], weekly: [], total: [], generatedAt: 0 },
+    crystals: 0,
+    cubeScrap: 0,
+    cylinderScrap: 0,
+    coneScrap: 0,
+    equippedArtifacts: [],
+    artifactInventory: [],
+    artifactUsesThisRound: 0,
+    noCooldownUntil: 0,
+    doublePlaceUntil: 0,
+    leaderboards: {
+      daily: [],
+      weekly: [],
+      total: [],
+      mvp: [],
+      rounds: [],
+      level: [],
+      perfect: [],
+      pieces: [],
+      excellence: [],
+      dominance: [],
+      generatedAt: 0
+    },
     leaderboardsLoading: false,
     cinematicEligible: false
   }
@@ -178,6 +224,17 @@ function refreshCinematicEligibility(): void {
   }
 }
 
+function parseEquippedArtifacts(raw: string): ArtifactType[] {
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is ArtifactType => item === 'NO_COOLDOWN' || item === 'DOUBLE_PLACE' || item === 'TRIPLE_PLACE' || item === 'COMPLETE_TEMPLATE')
+      : []
+  } catch (_) {
+    return []
+  }
+}
+
 export function initGameState(): void {
   if (initialized) return
   initialized = true
@@ -191,14 +248,25 @@ export function initGameState(): void {
       sessionPoints: data.sessionPoints,
       roundPoints: data.roundPoints,
       correctPieces: data.correctPieces,
+      ownOccupiedMask: data.ownOccupiedMask,
       profileLoaded: data.profileLoaded,
       tutorialCompleted: data.tutorialCompleted,
+      lastTutorialDay: data.lastTutorialDay,
       totalXp: data.totalXp,
       level: data.level,
       roundsPlayed: data.roundsPlayed,
       perfectBuilds: data.perfectBuilds,
       mvpAwards: data.mvpAwards,
-      sessionLeaderAwards: data.sessionLeaderAwards
+      sessionLeaderAwards: data.sessionLeaderAwards,
+      crystals: data.crystals,
+      cubeScrap: data.cubeScrap,
+      cylinderScrap: data.cylinderScrap,
+      coneScrap: data.coneScrap,
+      equippedArtifacts: parseEquippedArtifacts(data.equippedArtifactsJson),
+      artifactInventory: parseEquippedArtifacts(data.artifactInventoryJson),
+      artifactUsesThisRound: data.artifactUsesThisRound,
+      noCooldownUntil: data.noCooldownUntil,
+      doublePlaceUntil: data.doublePlaceUntil
     }
     refreshCinematicEligibility()
   })
@@ -275,14 +343,26 @@ export function getClientSnapshot(): ClientSnapshot {
   }
 }
 
-export function requestAttach(slotId: string, partType: string): void {
+export function requestBuyArtifact(artifactType: ArtifactType): void {
+  void room.send('buyArtifact', { artifactType })
+}
+
+export function requestEquipArtifact(inventoryIndex: number): void {
+  void room.send('equipArtifact', { inventoryIndex })
+}
+
+export function requestUseArtifact(slotIndex: number): void {
+  void room.send('useArtifact', { slotIndex })
+}
+
+export function requestAttach(slotId: string, partType: string, mode: PlacementMode = 'manual'): void {
   if (snapshot.playerStatus !== 'ACTIVE') return
-  void room.send('attach', { slotId, partType })
-  console.log(`[CLIENT] attach ${slotId}/${partType}`)
+  void room.send('attach', { slotId, partType, mode })
+  console.log(`[CLIENT] attach ${slotId}/${partType}/${mode}`)
 }
 
 export function requestJoinGame(): void {
-  if (!isPlayerInsideScene() || snapshot.playerStatus !== 'SPECTATOR' || !snapshot.tutorialCompleted) return
+  if (!isPlayerInsideScene() || snapshot.playerStatus !== 'SPECTATOR') return
   manualJoinRequired = false
   snapshot = { ...snapshot, playerStatus: 'QUEUED' }
   refreshCinematicEligibility()
@@ -291,7 +371,7 @@ export function requestJoinGame(): void {
 }
 
 export function requestCompleteTutorial(joinAfter: boolean): void {
-  snapshot = { ...snapshot, tutorialCompleted: true }
+  snapshot = { ...snapshot, tutorialCompleted: true, lastTutorialDay: Math.floor(Date.now() / 86400000) }
   if (joinAfter) {
     manualJoinRequired = false
     snapshot = { ...snapshot, playerStatus: 'QUEUED' }
@@ -322,3 +402,6 @@ export function gameStateSystem(dt: number): void {
   heartbeatAccumulator = 0
   void room.send('heartbeat', { active: true })
 }
+
+
+

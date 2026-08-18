@@ -3,7 +3,7 @@ import { getLevelProgress } from '../../shared/progression'
 import { PlayerProfileV1 } from './playerProfile'
 
 const LEADERBOARD_PREFIX = 'alienscrapyard_leaderboard_v1_'
-const SCHEMA_VERSION = 4
+const SCHEMA_VERSION = 5
 const PAGE_SIZE = 200
 const MAX_RECORDS = 1000
 const LOAD_ATTEMPTS = 3
@@ -15,30 +15,48 @@ interface LeaderboardRecordV1 {
   totalXp: number
   totalRounds: number
   totalMvps: number
+  totalCorrectPieces: number
+  totalPerfectBuilds: number
   level: number
   dailyKey: string
   dailyPoints: number
   dailyRounds: number
   dailyMvps: number
+  dailyCorrectPieces: number
+  dailyPerfectBuilds: number
   weeklyKey: string
   weeklyPoints: number
   weeklyRounds: number
   weeklyMvps: number
+  weeklyCorrectPieces: number
+  weeklyPerfectBuilds: number
   updatedAt: number
 }
 
 export interface LeaderboardEntry {
+  address: string
   name: string
   points: number
   level: number
   rounds: number
   mvps: number
+  pieces: number
+  perfects: number
+  excellence: number
+  dominance: number
 }
 
 export interface LeaderboardSnapshot {
   daily: LeaderboardEntry[]
   weekly: LeaderboardEntry[]
   total: LeaderboardEntry[]
+  mvp: LeaderboardEntry[]
+  rounds: LeaderboardEntry[]
+  level: LeaderboardEntry[]
+  perfect: LeaderboardEntry[]
+  pieces: LeaderboardEntry[]
+  excellence: LeaderboardEntry[]
+  dominance: LeaderboardEntry[]
   generatedAt: number
 }
 
@@ -76,12 +94,18 @@ function normalizeRecord(raw: unknown, address = '', displayName = '', knownTota
   const weeklyPoints = safeInt(saved.weeklyPoints)
   const totalXp = Math.max(safeInt(saved.totalXp), dailyPoints, weeklyPoints)
   let totalMvps = Math.max(safeInt(saved.totalMvps), safeInt(knownTotalMvps))
+  const totalCorrectPieces = safeInt(saved.totalCorrectPieces)
+  const totalPerfectBuilds = safeInt(saved.totalPerfectBuilds)
   const dailyKeyValue = typeof saved.dailyKey === 'string' ? saved.dailyKey : ''
   const weeklyKeyValue = typeof saved.weeklyKey === 'string' ? saved.weeklyKey : ''
   const dailyRounds = safeInt(saved.dailyRounds)
   const weeklyRounds = safeInt(saved.weeklyRounds)
   let dailyMvps = safeInt(saved.dailyMvps)
   let weeklyMvps = safeInt(saved.weeklyMvps)
+  const dailyCorrectPieces = safeInt(saved.dailyCorrectPieces)
+  const weeklyCorrectPieces = safeInt(saved.weeklyCorrectPieces)
+  let dailyPerfectBuilds = safeInt(saved.dailyPerfectBuilds)
+  let weeklyPerfectBuilds = safeInt(saved.weeklyPerfectBuilds)
 
   // Seed legacy period MVPs from durable totals.
   if (sourceSchemaVersion < SCHEMA_VERSION && totalMvps > 0) {
@@ -96,6 +120,8 @@ function normalizeRecord(raw: unknown, address = '', displayName = '', knownTota
   dailyMvps = Math.min(dailyMvps, dailyRounds)
   weeklyMvps = Math.min(weeklyRounds, Math.max(weeklyMvps, dailyMvps))
   totalMvps = Math.max(totalMvps, weeklyMvps, dailyMvps)
+  dailyPerfectBuilds = Math.min(dailyPerfectBuilds, dailyRounds)
+  weeklyPerfectBuilds = Math.min(weeklyPerfectBuilds, weeklyRounds)
 
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -104,15 +130,21 @@ function normalizeRecord(raw: unknown, address = '', displayName = '', knownTota
     totalXp,
     totalRounds: safeInt(saved.totalRounds),
     totalMvps,
+    totalCorrectPieces,
+    totalPerfectBuilds,
     level: getLevelProgress(totalXp).level,
     dailyKey: dailyKeyValue,
     dailyPoints,
     dailyRounds,
     dailyMvps,
+    dailyCorrectPieces,
+    dailyPerfectBuilds,
     weeklyKey: weeklyKeyValue,
     weeklyPoints,
     weeklyRounds,
     weeklyMvps,
+    weeklyCorrectPieces,
+    weeklyPerfectBuilds,
     updatedAt: safeInt(saved.updatedAt)
   }
 }
@@ -135,6 +167,8 @@ export class GlobalLeaderboardStore {
       cached.totalXp = Math.max(cached.totalXp, cached.dailyPoints, cached.weeklyPoints, profile.totalXp)
       cached.totalRounds = Math.max(cached.totalRounds, profile.roundsPlayed)
       cached.totalMvps = Math.max(cached.totalMvps, profile.mvpAwards)
+      cached.totalCorrectPieces = Math.max(cached.totalCorrectPieces, profile.correctPieces)
+      cached.totalPerfectBuilds = Math.max(cached.totalPerfectBuilds, profile.perfectBuilds)
       cached.level = getLevelProgress(cached.totalXp).level
       this.rollPeriods(cached)
       this.markDirty(address)
@@ -158,15 +192,21 @@ export class GlobalLeaderboardStore {
       totalXp: profile.totalXp,
       totalRounds: profile.roundsPlayed,
       totalMvps: profile.mvpAwards,
+      totalCorrectPieces: profile.correctPieces,
+      totalPerfectBuilds: profile.perfectBuilds,
       level: profile.level,
       dailyKey: dayKey(),
       dailyPoints: 0,
       dailyRounds: 0,
       dailyMvps: 0,
+      dailyCorrectPieces: 0,
+      dailyPerfectBuilds: 0,
       weeklyKey: weekKey(),
       weeklyPoints: 0,
       weeklyRounds: 0,
       weeklyMvps: 0,
+      weeklyCorrectPieces: 0,
+      weeklyPerfectBuilds: 0,
       updatedAt: Date.now()
     }
 
@@ -174,6 +214,8 @@ export class GlobalLeaderboardStore {
     record.totalXp = Math.max(record.totalXp, record.dailyPoints, record.weeklyPoints, profile.totalXp)
     record.totalRounds = Math.max(record.totalRounds, profile.roundsPlayed)
     record.totalMvps = Math.max(record.totalMvps, profile.mvpAwards)
+    record.totalCorrectPieces = Math.max(record.totalCorrectPieces, profile.correctPieces)
+    record.totalPerfectBuilds = Math.max(record.totalPerfectBuilds, profile.perfectBuilds)
     record.level = getLevelProgress(record.totalXp).level
     this.rollPeriods(record)
     this.cache.set(address, record)
@@ -181,28 +223,32 @@ export class GlobalLeaderboardStore {
     return record.totalXp
   }
 
-  addPoints(address: string, displayName: string, totalXp: number, points: number): void {
+  addPoints(address: string, displayName: string, totalXp: number, points: number, correctPieces: number): void {
     const key = address.toLowerCase()
     const record = this.cache.get(key)
     if (!record) return
 
     const earned = Math.max(0, Math.floor(points))
+    const pieces = Math.max(0, Math.floor(correctPieces))
     this.rollPeriods(record)
     record.displayName = displayName || record.displayName
     record.dailyPoints += earned
     record.weeklyPoints += earned
+    record.dailyCorrectPieces += pieces
+    record.weeklyCorrectPieces += pieces
     record.totalXp = Math.max(
       record.totalXp,
       record.dailyPoints,
       record.weeklyPoints,
       Math.max(0, Math.floor(totalXp))
     )
+    record.totalCorrectPieces += pieces
     record.level = getLevelProgress(record.totalXp).level
     record.updatedAt = Date.now()
     this.markDirty(key)
   }
 
-  recordRound(address: string, totalRounds: number, totalMvps: number, awardedMvp: boolean): void {
+  recordRound(address: string, totalRounds: number, totalMvps: number, totalPerfectBuilds: number, perfect: boolean, awardedMvp: boolean): void {
     const key = address.toLowerCase()
     const record = this.cache.get(key)
     if (!record) return
@@ -214,8 +260,13 @@ export class GlobalLeaderboardStore {
       record.dailyMvps += 1
       record.weeklyMvps += 1
     }
+    if (perfect) {
+      record.dailyPerfectBuilds += 1
+      record.weeklyPerfectBuilds += 1
+    }
     record.totalRounds = Math.max(record.totalRounds, Math.max(0, Math.floor(totalRounds)))
     record.totalMvps = Math.max(record.totalMvps, Math.max(0, Math.floor(totalMvps)))
+    record.totalPerfectBuilds = Math.max(record.totalPerfectBuilds, Math.max(0, Math.floor(totalPerfectBuilds)))
     record.updatedAt = Date.now()
     this.markDirty(key)
   }
@@ -228,12 +279,16 @@ export class GlobalLeaderboardStore {
       record.dailyPoints = 0
       record.dailyRounds = 0
       record.dailyMvps = 0
+      record.dailyCorrectPieces = 0
+      record.dailyPerfectBuilds = 0
     }
     if (record.weeklyKey !== thisWeek) {
       record.weeklyKey = thisWeek
       record.weeklyPoints = 0
       record.weeklyRounds = 0
       record.weeklyMvps = 0
+      record.weeklyCorrectPieces = 0
+      record.weeklyPerfectBuilds = 0
     }
   }
 
@@ -284,38 +339,69 @@ export class GlobalLeaderboardStore {
     const today = dayKey()
     const thisWeek = weekKey()
     const all = [...records.values()]
+    const excellence = (points: number, rounds: number): number =>
+      rounds > 0 ? Math.round(points / rounds) : 0
+    const dominance = (mvps: number, rounds: number): number =>
+      rounds > 0 ? Math.round((mvps / rounds) * 100) : 0
     const rank = (
       points: (record: LeaderboardRecordV1) => number,
       rounds: (record: LeaderboardRecordV1) => number,
-      mvps: (record: LeaderboardRecordV1) => number
+      mvps: (record: LeaderboardRecordV1) => number,
+      pieces: (record: LeaderboardRecordV1) => number,
+      perfects: (record: LeaderboardRecordV1) => number,
+      sortScore?: (entry: LeaderboardEntry) => number
     ): LeaderboardEntry[] => all
       .map((record) => ({
+        address: record.wallet,
         name: record.displayName,
         points: points(record),
         level: record.level,
         rounds: rounds(record),
-        mvps: mvps(record)
+        mvps: mvps(record),
+        pieces: pieces(record),
+        perfects: perfects(record),
+        excellence: excellence(points(record), rounds(record)),
+        dominance: dominance(mvps(record), rounds(record))
       }))
-      .filter((entry) => entry.points > 0)
-      .sort((a, b) => b.points - a.points || b.level - a.level || a.name.localeCompare(b.name))
+      .filter((entry) => entry.points > 0 || entry.rounds > 0 || entry.mvps > 0 || entry.pieces > 0 || entry.perfects > 0)
+      .sort((a, b) => {
+        const aScore = sortScore ? sortScore(a) : a.points
+        const bScore = sortScore ? sortScore(b) : b.points
+        return bScore - aScore || b.points - a.points || b.level - a.level || a.name.localeCompare(b.name)
+      })
       .slice(0, Math.max(1, limit))
+
+    const totalRank = rank(
+      (record) => record.totalXp,
+      (record) => record.totalRounds,
+      (record) => record.totalMvps,
+      (record) => record.totalCorrectPieces,
+      (record) => record.totalPerfectBuilds
+    )
 
     return {
       daily: rank(
         (record) => record.dailyKey === today ? record.dailyPoints : 0,
         (record) => record.dailyKey === today ? record.dailyRounds : 0,
-        (record) => record.dailyKey === today ? record.dailyMvps : 0
+        (record) => record.dailyKey === today ? record.dailyMvps : 0,
+        (record) => record.dailyKey === today ? record.dailyCorrectPieces : 0,
+        (record) => record.dailyKey === today ? record.dailyPerfectBuilds : 0
       ),
       weekly: rank(
         (record) => record.weeklyKey === thisWeek ? record.weeklyPoints : 0,
         (record) => record.weeklyKey === thisWeek ? record.weeklyRounds : 0,
-        (record) => record.weeklyKey === thisWeek ? record.weeklyMvps : 0
+        (record) => record.weeklyKey === thisWeek ? record.weeklyMvps : 0,
+        (record) => record.weeklyKey === thisWeek ? record.weeklyCorrectPieces : 0,
+        (record) => record.weeklyKey === thisWeek ? record.weeklyPerfectBuilds : 0
       ),
-      total: rank(
-        (record) => record.totalXp,
-        (record) => record.totalRounds,
-        (record) => record.totalMvps
-      ),
+      total: totalRank,
+      mvp: [...totalRank].sort((a, b) => b.mvps - a.mvps || b.points - a.points).slice(0, Math.max(1, limit)),
+      rounds: [...totalRank].sort((a, b) => b.rounds - a.rounds || b.points - a.points).slice(0, Math.max(1, limit)),
+      level: [...totalRank].sort((a, b) => b.level - a.level || b.points - a.points).slice(0, Math.max(1, limit)),
+      perfect: [...totalRank].sort((a, b) => b.perfects - a.perfects || b.points - a.points).slice(0, Math.max(1, limit)),
+      pieces: [...totalRank].sort((a, b) => b.pieces - a.pieces || b.points - a.points).slice(0, Math.max(1, limit)),
+      excellence: [...totalRank].sort((a, b) => b.excellence - a.excellence || b.points - a.points).slice(0, Math.max(1, limit)),
+      dominance: [...totalRank].sort((a, b) => b.dominance - a.dominance || b.points - a.points).slice(0, Math.max(1, limit)),
       generatedAt: Date.now()
     }
   }

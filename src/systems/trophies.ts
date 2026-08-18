@@ -5,23 +5,25 @@ import {
   Entity,
   GltfContainer,
   TextShape,
-  Transform
+  Transform,
+  UiCanvasInformation
 } from '@dcl/sdk/ecs'
 import { Color3, Color4, Quaternion, Vector3 } from '@dcl/sdk/math'
 import { getClientSnapshot, TrophySnapshot } from '../game/gameState'
 import { GLB_SCALE, PART_GLB, PartType, SCENE_CENTER, TEMPLATE_BASE_Y } from '../shared/constants'
 import { getTemplate, SlotDefinition } from '../shared/templates'
 
-const MAX_VISIBLE_TROPHIES = 5
+const MAX_VISIBLE_TROPHIES = 3
+const MAX_VISIBLE_TROPHIES_MOBILE = 0
 const ASCENT_SECONDS = 3.5
-const TROPHY_SCALE = 1.74
+const TROPHY_SCALE = 1.57
 
 const ORBIT_PATHS = [
-  { centerX: SCENE_CENTER.x - 20, centerZ: SCENE_CENTER.z, radius: 4.5, height: 24, speed: 0.117 },
-  { centerX: SCENE_CENTER.x, centerZ: SCENE_CENTER.z - 20, radius: 4.5, height: 28, speed: 0.107 },
-  { centerX: SCENE_CENTER.x + 30, centerZ: SCENE_CENTER.z, radius: 4.5, height: 26, speed: 0.099 },
-  { centerX: SCENE_CENTER.x - 11, centerZ: SCENE_CENTER.z + 27, radius: 4.5, height: 30, speed: 0.091 },
-  { centerX: SCENE_CENTER.x + 22, centerZ: SCENE_CENTER.z + 27, radius: 4.5, height: 34, speed: 0.083 }
+  { centerX: SCENE_CENTER.x - 20, centerZ: SCENE_CENTER.z, radius: 4.5, height: 10, speed: 0.48 },
+  { centerX: SCENE_CENTER.x, centerZ: SCENE_CENTER.z - 20, radius: 4.5, height: 10, speed: 0.44 },
+  { centerX: SCENE_CENTER.x + 30, centerZ: SCENE_CENTER.z, radius: 4.5, height: 10, speed: 0.4 },
+  { centerX: SCENE_CENTER.x - 11, centerZ: SCENE_CENTER.z + 27, radius: 4.5, height: 10, speed: 0.36 },
+  { centerX: SCENE_CENTER.x + 22, centerZ: SCENE_CENTER.z + 27, radius: 4.5, height: 10, speed: 0.32 }
 ] as const
 
 interface TrophyVisual {
@@ -38,6 +40,17 @@ const trophies = new Map<number, TrophyVisual>()
 let historyInitialized = false
 let orbitTime = 0
 
+function mobileLiteMode(): boolean {
+  const canvasInfo = UiCanvasInformation.getOrNull(engine.RootEntity)
+  if (!canvasInfo) return true
+  return canvasInfo.width < 1500 ||
+    canvasInfo.height < 850 ||
+    canvasInfo.devicePixelRatio >= 1.75
+}
+
+function visibleTrophyLimit(): number {
+  return mobileLiteMode() ? MAX_VISIBLE_TROPHIES_MOBILE : MAX_VISIBLE_TROPHIES
+}
 function slotScale(slot: SlotDefinition): Vector3 {
   return Vector3.create(
     slot.scale.x * GLB_SCALE,
@@ -125,7 +138,8 @@ function createTrophy(record: TrophySnapshot, animate: boolean, orbitIndex: numb
 }
 
 function reconcileTrophies(records: TrophySnapshot[]): void {
-  const visible = records.slice(-MAX_VISIBLE_TROPHIES)
+  const limit = visibleTrophyLimit()
+  const visible = limit <= 0 ? [] : records.slice(-limit)
   const visibleIds = new Set(visible.map((record) => record.id))
 
   for (const [id, visual] of trophies) {
@@ -179,11 +193,11 @@ export function trophySystem(dt: number): void {
     rootTransform.scale = Vector3.create(scale, scale, scale)
     rootTransform.rotation = Quaternion.fromEulerDegrees(
       0,
-      (orbitTime * 22 + visual.record.id * 31) % 360,
+      (orbitTime * 70 + visual.record.id * 31) % 360,
       0
     )
 
-    Transform.getMutable(visual.label).position = Vector3.create(x, y + 9, z)
+    Transform.getMutable(visual.label).position = Vector3.create(x, y + 7.2, z)
   }
 }
 
@@ -192,3 +206,4 @@ export function clearTrophies(): void {
   trophies.clear()
   historyInitialized = false
 }
+

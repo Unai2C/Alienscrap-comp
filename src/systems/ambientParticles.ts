@@ -2,17 +2,28 @@ import {
   engine,
   Entity,
   Material,
-  MaterialTransparencyMode,
   MeshRenderer,
-  Transform
+  Transform,
+  UiCanvasInformation
 } from '@dcl/sdk/ecs'
 import { Color4, Quaternion, Vector3 } from '@dcl/sdk/math'
 
-const PARTICLE_COUNT = 288
+const DESKTOP_PARTICLE_COUNT = 144
+const MOBILE_PARTICLE_COUNT = 36
 const MIN_Y = 1.5
 const MAX_Y = 28
 const MIN_XZ = -12
 const PARTICLE_AREA = 72
+
+function mobileLiteMode(): boolean {
+  const canvasInfo = UiCanvasInformation.getOrNull(engine.RootEntity)
+  if (!canvasInfo) return true
+  return canvasInfo.width < 1500 || canvasInfo.height < 850 || canvasInfo.devicePixelRatio >= 1.75
+}
+
+function particleCount(): number {
+  return mobileLiteMode() ? MOBILE_PARTICLE_COUNT : DESKTOP_PARTICLE_COUNT
+}
 
 interface AmbientParticle {
   entity: Entity
@@ -26,10 +37,14 @@ let elapsed = 0
 
 export function setupAmbientParticles(): void {
   if (particles.length > 0) return
+  if (!UiCanvasInformation.getOrNull(engine.RootEntity)) return
 
-  for (let index = 0; index < PARTICLE_COUNT; index++) {
+  const count = particleCount()
+  for (let index = 0; index < count; index++) {
     const entity = engine.addEntity()
-    const baseScale = 0.045 + ((index * 7) % 9) * 0.025
+    const baseScale = mobileLiteMode()
+      ? 0.055 + ((index * 7) % 4) * 0.018
+      : 0.045 + ((index * 7) % 7) * 0.02
     const x = MIN_XZ + ((index * 17) % PARTICLE_AREA)
     const z = MIN_XZ + ((index * 29) % PARTICLE_AREA)
     const y = MIN_Y + ((index * 11) % 26)
@@ -40,15 +55,14 @@ export function setupAmbientParticles(): void {
     })
     MeshRenderer.setSphere(entity)
     const color = index % 3 === 0
-      ? Color4.create(0.12, 0.9, 1, 0.95)
-      : Color4.create(0.18, 0.62, 1, 0.85)
+      ? Color4.create(0.12, 0.9, 1, 1)
+      : Color4.create(0.18, 0.62, 1, 1)
     Material.setPbrMaterial(entity, {
       albedoColor: color,
       emissiveColor: Color4.create(color.r, color.g, color.b, 1),
-      emissiveIntensity: 8,
-      transparencyMode: MaterialTransparencyMode.MTM_ALPHA_BLEND,
+      emissiveIntensity: mobileLiteMode() ? 1.6 : 3.2,
       metallic: 0,
-      roughness: 0.15
+      roughness: 0.35
     })
     particles.push({
       entity,
@@ -60,6 +74,9 @@ export function setupAmbientParticles(): void {
 }
 
 export function ambientParticleSystem(dt: number): void {
+  if (particles.length === 0) setupAmbientParticles()
+  if (particles.length === 0) return
+
   const safeDt = Math.min(Math.max(dt, 0), 0.1)
   elapsed += safeDt
 

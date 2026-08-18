@@ -1,8 +1,9 @@
 import { Storage } from '@dcl/sdk/server'
+import type { PartType } from '../../shared/constants'
 import { getLevelProgress } from '../../shared/progression'
 
 const PROFILE_KEY = 'alienscrapyard_profile_v1'
-const SCHEMA_VERSION = 3
+const SCHEMA_VERSION = 4
 const LOAD_ATTEMPTS = 3
 
 export interface PlayerProfileV1 {
@@ -16,7 +17,12 @@ export interface PlayerProfileV1 {
   perfectBuilds: number
   mvpAwards: number
   sessionLeaderAwards: number
+  crystals: number
+  cubeScrap: number
+  cylinderScrap: number
+  coneScrap: number
   tutorialCompleted: boolean
+  lastTutorialDay: number
   firstSeenAt: number
   lastSeenAt: number
   updatedAt: number
@@ -41,7 +47,12 @@ function emptyProfile(wallet: string, displayName: string): PlayerProfileV1 {
     perfectBuilds: 0,
     mvpAwards: 0,
     sessionLeaderAwards: 0,
+    crystals: 0,
+    cubeScrap: 0,
+    cylinderScrap: 0,
+    coneScrap: 0,
     tutorialCompleted: false,
+    lastTutorialDay: 0,
     firstSeenAt: now,
     lastSeenAt: now,
     updatedAt: now
@@ -54,6 +65,7 @@ function normalizeProfile(raw: unknown, wallet: string, displayName: string): Pl
 
   const saved = raw as Partial<PlayerProfileV1>
   const totalXp = safeInt(saved.totalXp)
+  const roundsPlayed = safeInt(saved.roundsPlayed)
   return {
     schemaVersion: SCHEMA_VERSION,
     wallet,
@@ -63,11 +75,16 @@ function normalizeProfile(raw: unknown, wallet: string, displayName: string): Pl
     totalXp,
     level: getLevelProgress(totalXp).level,
     correctPieces: safeInt(saved.correctPieces),
-    roundsPlayed: safeInt(saved.roundsPlayed),
+    roundsPlayed,
     perfectBuilds: safeInt(saved.perfectBuilds),
     mvpAwards: safeInt(saved.mvpAwards),
     sessionLeaderAwards: safeInt(saved.sessionLeaderAwards),
-    tutorialCompleted: saved.tutorialCompleted === true,
+    crystals: safeInt(saved.crystals),
+    cubeScrap: safeInt(saved.cubeScrap),
+    cylinderScrap: safeInt(saved.cylinderScrap),
+    coneScrap: safeInt(saved.coneScrap),
+    tutorialCompleted: saved.tutorialCompleted === true || roundsPlayed > 0,
+    lastTutorialDay: safeInt(saved.lastTutorialDay),
     firstSeenAt: safeInt(saved.firstSeenAt, fallback.firstSeenAt),
     lastSeenAt: safeInt(saved.lastSeenAt, fallback.lastSeenAt),
     updatedAt: safeInt(saved.updatedAt, fallback.updatedAt)
@@ -146,6 +163,47 @@ export class PlayerProfileStore {
     return profile
   }
 
+  addScrap(address: string, partType: PartType, amount = 1): PlayerProfileV1 | null {
+    const key = address.toLowerCase()
+    const profile = this.cache.get(key)
+    if (!profile) return null
+
+    const safeAmount = Math.max(0, Math.floor(amount))
+    if (partType === 'CUBE') profile.cubeScrap += safeAmount
+    else if (partType === 'CYLINDER') profile.cylinderScrap += safeAmount
+    else profile.coneScrap += safeAmount
+    profile.lastSeenAt = Date.now()
+    profile.updatedAt = profile.lastSeenAt
+    this.markDirty(key)
+    return profile
+  }
+
+  spendCrystals(address: string, amount: number): PlayerProfileV1 | null {
+    const key = address.toLowerCase()
+    const profile = this.cache.get(key)
+    if (!profile) return null
+
+    const safeAmount = Math.max(0, Math.floor(amount))
+    if (profile.crystals < safeAmount) return null
+    profile.crystals -= safeAmount
+    profile.lastSeenAt = Date.now()
+    profile.updatedAt = profile.lastSeenAt
+    this.markDirty(key)
+    return profile
+  }
+
+  addCrystals(address: string, amount: number): PlayerProfileV1 | null {
+    const key = address.toLowerCase()
+    const profile = this.cache.get(key)
+    if (!profile) return null
+
+    profile.crystals += Math.max(0, Math.floor(amount))
+    profile.lastSeenAt = Date.now()
+    profile.updatedAt = profile.lastSeenAt
+    this.markDirty(key)
+    return profile
+  }
+
   ensureMinimumXp(address: string, minimumXp: number): PlayerProfileV1 | null {
     const key = address.toLowerCase()
     const profile = this.cache.get(key)
@@ -197,11 +255,13 @@ export class PlayerProfileStore {
   }
 
   completeTutorial(address: string): void {
+    const today = Math.floor(Date.now() / 86400000)
     const key = address.toLowerCase()
     const profile = this.cache.get(key)
-    if (!profile || profile.tutorialCompleted) return
+    if (!profile) return
 
     profile.tutorialCompleted = true
+    profile.lastTutorialDay = today
     profile.lastSeenAt = Date.now()
     profile.updatedAt = profile.lastSeenAt
     this.markDirty(key)
@@ -251,3 +311,5 @@ export class PlayerProfileStore {
 export function createPlayerProfileStore(): PlayerProfileStore {
   return new PlayerProfileStore()
 }
+
+
