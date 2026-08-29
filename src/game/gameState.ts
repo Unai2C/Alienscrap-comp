@@ -89,7 +89,7 @@ export interface ClientSnapshot {
   cubeScrap: number
   cylinderScrap: number
   coneScrap: number
-  equippedArtifacts: ArtifactType[]
+  equippedArtifacts: Array<ArtifactType | undefined>
   artifactInventory: ArtifactType[]
   artifactUsesThisRound: number
   noCooldownUntil: number
@@ -224,12 +224,23 @@ function refreshCinematicEligibility(): void {
   }
 }
 
-function parseEquippedArtifacts(raw: string): ArtifactType[] {
+function isArtifact(value: unknown): value is ArtifactType {
+  return value === 'NO_COOLDOWN' || value === 'DOUBLE_PLACE' || value === 'TRIPLE_PLACE' || value === 'COMPLETE_TEMPLATE'
+}
+
+function parseEquippedArtifacts(raw: string): Array<ArtifactType | undefined> {
   try {
     const parsed = JSON.parse(raw)
-    return Array.isArray(parsed)
-      ? parsed.filter((item): item is ArtifactType => item === 'NO_COOLDOWN' || item === 'DOUBLE_PLACE' || item === 'TRIPLE_PLACE' || item === 'COMPLETE_TEMPLATE')
-      : []
+    return Array.isArray(parsed) ? [0, 1].map((index) => isArtifact(parsed[index]) ? parsed[index] : undefined) : []
+  } catch (_) {
+    return []
+  }
+}
+
+function parseArtifactInventory(raw: string): ArtifactType[] {
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter(isArtifact) : []
   } catch (_) {
     return []
   }
@@ -263,7 +274,7 @@ export function initGameState(): void {
       cylinderScrap: data.cylinderScrap,
       coneScrap: data.coneScrap,
       equippedArtifacts: parseEquippedArtifacts(data.equippedArtifactsJson),
-      artifactInventory: parseEquippedArtifacts(data.artifactInventoryJson),
+      artifactInventory: parseArtifactInventory(data.artifactInventoryJson),
       artifactUsesThisRound: data.artifactUsesThisRound,
       noCooldownUntil: data.noCooldownUntil,
       doublePlaceUntil: data.doublePlaceUntil

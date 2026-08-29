@@ -1,5 +1,5 @@
 import { Storage } from '@dcl/sdk/server'
-import type { PartType } from '../../shared/constants'
+import type { ArtifactType, PartType } from '../../shared/constants'
 import { getLevelProgress } from '../../shared/progression'
 
 const PROFILE_KEY = 'alienscrapyard_profile_v1'
@@ -21,6 +21,9 @@ export interface PlayerProfileV1 {
   cubeScrap: number
   cylinderScrap: number
   coneScrap: number
+  artifactInventory: ArtifactType[]
+  equippedArtifacts: Array<ArtifactType | null>
+  starterArtifactsGranted: boolean
   tutorialCompleted: boolean
   lastTutorialDay: number
   firstSeenAt: number
@@ -51,6 +54,9 @@ function emptyProfile(wallet: string, displayName: string): PlayerProfileV1 {
     cubeScrap: 0,
     cylinderScrap: 0,
     coneScrap: 0,
+    artifactInventory: [],
+    equippedArtifacts: [null, null],
+    starterArtifactsGranted: false,
     tutorialCompleted: false,
     lastTutorialDay: 0,
     firstSeenAt: now,
@@ -66,6 +72,7 @@ function normalizeProfile(raw: unknown, wallet: string, displayName: string): Pl
   const saved = raw as Partial<PlayerProfileV1>
   const totalXp = safeInt(saved.totalXp)
   const roundsPlayed = safeInt(saved.roundsPlayed)
+  const artifactInventory = normalizeArtifactInventory(saved.artifactInventory)
   return {
     schemaVersion: SCHEMA_VERSION,
     wallet,
@@ -83,12 +90,28 @@ function normalizeProfile(raw: unknown, wallet: string, displayName: string): Pl
     cubeScrap: safeInt(saved.cubeScrap),
     cylinderScrap: safeInt(saved.cylinderScrap),
     coneScrap: safeInt(saved.coneScrap),
+    artifactInventory,
+    equippedArtifacts: normalizeEquippedArtifacts(saved.equippedArtifacts),
+    starterArtifactsGranted: saved.starterArtifactsGranted === true || roundsPlayed > 0 || totalXp > 0 || artifactInventory.length > 0,
     tutorialCompleted: saved.tutorialCompleted === true || roundsPlayed > 0,
     lastTutorialDay: safeInt(saved.lastTutorialDay),
     firstSeenAt: safeInt(saved.firstSeenAt, fallback.firstSeenAt),
     lastSeenAt: safeInt(saved.lastSeenAt, fallback.lastSeenAt),
     updatedAt: safeInt(saved.updatedAt, fallback.updatedAt)
   }
+}
+
+function isArtifact(value: unknown): value is ArtifactType {
+  return value === 'NO_COOLDOWN' || value === 'DOUBLE_PLACE' || value === 'TRIPLE_PLACE' || value === 'COMPLETE_TEMPLATE'
+}
+
+function normalizeArtifactInventory(value: unknown): ArtifactType[] {
+  return Array.isArray(value) ? value.filter(isArtifact) : []
+}
+
+function normalizeEquippedArtifacts(value: unknown): Array<ArtifactType | null> {
+  if (!Array.isArray(value)) return [null, null]
+  return [0, 1].map((index) => isArtifact(value[index]) ? value[index] : null)
 }
 
 export class PlayerProfileStore {
@@ -198,6 +221,33 @@ export class PlayerProfileStore {
     if (!profile) return null
 
     profile.crystals += Math.max(0, Math.floor(amount))
+    profile.lastSeenAt = Date.now()
+    profile.updatedAt = profile.lastSeenAt
+    this.markDirty(key)
+    return profile
+  }
+
+  setArtifacts(address: string, artifactInventory: ArtifactType[], equippedArtifacts: Array<ArtifactType | null>): PlayerProfileV1 | null {
+    const key = address.toLowerCase()
+    const profile = this.cache.get(key)
+    if (!profile) return null
+
+    profile.artifactInventory = artifactInventory.filter(isArtifact)
+    profile.equippedArtifacts = [0, 1].map((index) => isArtifact(equippedArtifacts[index]) ? equippedArtifacts[index] : null)
+    profile.lastSeenAt = Date.now()
+    profile.updatedAt = profile.lastSeenAt
+    this.markDirty(key)
+    return profile
+  }
+
+  grantStarterArtifacts(address: string, artifactInventory: ArtifactType[]): PlayerProfileV1 | null {
+    const key = address.toLowerCase()
+    const profile = this.cache.get(key)
+    if (!profile) return null
+
+    profile.artifactInventory = artifactInventory.filter(isArtifact)
+    profile.equippedArtifacts = [null, null]
+    profile.starterArtifactsGranted = true
     profile.lastSeenAt = Date.now()
     profile.updatedAt = profile.lastSeenAt
     this.markDirty(key)

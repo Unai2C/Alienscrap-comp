@@ -1,6 +1,6 @@
 // Timing
 export const BUILD_DURATION_SECONDS = 60
-export const BUILD_COMPLETE_SECONDS = 5
+export const BUILD_COMPLETE_SECONDS = 10
 export const COUNTDOWN_SECONDS = 2
 export const PERFORMANCE_DURATION_SECONDS = 3
 export const RESET_DELAY_SECONDS = 2
@@ -29,6 +29,24 @@ export const POINTS_GROUP_SUCCESS = 50
 export const POINTS_SESSION_LEADER = 50
 export const COMMUNITY_BASE_POINTS = 1000
 export const COMMUNITY_GROWTH_POINTS = 500
+export interface CommunityTierReward {
+  tier: number
+  crystalBonus: number
+  pointBonus: number
+}
+export const COMMUNITY_TIER_REWARDS: CommunityTierReward[] = [
+  { tier: 1, crystalBonus: 0, pointBonus: 0 },
+  { tier: 2, crystalBonus: 1, pointBonus: 0 },
+  { tier: 3, crystalBonus: 2, pointBonus: 25 },
+  { tier: 4, crystalBonus: 3, pointBonus: 50 },
+  { tier: 5, crystalBonus: 4, pointBonus: 75 },
+  { tier: 6, crystalBonus: 5, pointBonus: 100 }
+]
+export function communityTierReward(tier: number): CommunityTierReward {
+  const safeTier = Math.max(1, Math.floor(tier))
+  return COMMUNITY_TIER_REWARDS.find((reward) => reward.tier === safeTier)
+    ?? COMMUNITY_TIER_REWARDS[COMMUNITY_TIER_REWARDS.length - 1]
+}
 export const SESSION_RECONNECT_MS = 5 * 60 * 1000
 export const PLAYER_ONLINE_MS = 45 * 1000
 export const HEARTBEAT_SECONDS = 15
@@ -43,8 +61,13 @@ export const CRYSTALS_FAILED_BASE = 2
 export const CRYSTALS_FAILED_TOP_BONUS = [3, 2, 1] as const
 export const CRYSTALS_FAILED_CAP = 6
 export const ARTIFACT_USES_PER_ROUND = 2
-export const ARTIFACT_PRICE_CRYSTALS = 60
-export const ARTIFACT_DURATION_MS = 5000
+export const ARTIFACT_PRICE_CRYSTALS: Record<ArtifactType, number> = {
+  DOUBLE_PLACE: 40,
+  TRIPLE_PLACE: 60,
+  NO_COOLDOWN: 80,
+  COMPLETE_TEMPLATE: 100
+}
+export const ARTIFACT_DURATION_MS = 10000
 export type ArtifactType = 'NO_COOLDOWN' | 'DOUBLE_PLACE' | 'TRIPLE_PLACE' | 'COMPLETE_TEMPLATE'
 
 export const ARTIFACT_LABEL: Record<ArtifactType, string> = {
@@ -70,14 +93,14 @@ export type PlacementMode = 'manual' | 'auto'
 
 export const PLACEMENT_COOLDOWN_MS: Record<PlacementMode, Record<PartType, number>> = {
   manual: {
-    CUBE: 350,
-    CYLINDER: 500,
-    CONE: 650
+    CUBE: 500,
+    CYLINDER: 750,
+    CONE: 1000
   },
   auto: {
-    CUBE: 1000,
-    CYLINDER: 1400,
-    CONE: 1800
+    CUBE: 1400,
+    CYLINDER: 1800,
+    CONE: 2300
   }
 }
 
@@ -121,5 +144,7 @@ export function getPerformanceType(attached: number, required: number): Performa
 
 // Logging
 export const DEBUG = false
+
+
 
 

@@ -2,9 +2,10 @@ import { engine } from '@dcl/sdk/ecs'
 import { isServer } from '@dcl/sdk/network'
 import { setupAlienServer } from './server/alienServer'
 import { gameStateSystem, initGameState } from './game/gameState'
-import { setupEntities, reconcileScene } from './systems/interactionSetup'
+import { setupEntities, reconcileScene, perfectTemplateAnimationSystem, placementLaunchSystem } from './systems/interactionSetup'
 import { cinematicSystem } from './systems/cinematic'
 import { setupArtifactShop } from './systems/artifactShop'
+import { setupInfoPanels } from './systems/infoPanels'
 import { leaderboardDisplaySystem } from './systems/leaderboardDisplay'
 import { trophySystem } from './systems/trophies'
 import { ambientParticleSystem, setupAmbientParticles } from './systems/ambientParticles'
@@ -32,6 +33,7 @@ export function main() {
   setupAudio()
   setupAvatarInteraction()
   setupArtifactShop()
+  setupInfoPanels()
   setupAmbientParticles()
   setupTutorialGuide()
 
@@ -39,6 +41,8 @@ export function main() {
   engine.addSystem(gameStateSystem, undefined, 'alien-game-state-system')
   engine.addSystem(avatarInteractionSystem, undefined, 'alien-avatar-interaction-system')
   engine.addSystem(reconcileScene, undefined, 'alien-scene-system')
+  engine.addSystem(placementLaunchSystem, undefined, 'alien-placement-launch-system')
+  engine.addSystem(perfectTemplateAnimationSystem, undefined, 'alien-template-cinematic-animation-system')
   engine.addSystem(cinematicSystem, undefined, 'alien-cinematic-system')
   engine.addSystem(ambientParticleSystem, undefined, 'alien-ambient-particle-system')
   engine.addSystem(trophySystem, undefined, 'alien-trophy-system')

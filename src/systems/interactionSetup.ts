@@ -25,7 +25,7 @@ import {
   SCENE_CENTER
 } from '../shared/constants'
 import { getTemplate, SlotDefinition } from '../shared/templates'
-import { onWrongPart, playSuccess, showFeedback, startPlacementCooldown } from '../ui'
+import { canStartPlacementCooldown, onWrongPart, playSuccess, showFeedback, startPlacementCooldown } from '../ui'
 
 const visualEntities = new Set<Entity>()
 const recentClicks = new Map<string, number>()
@@ -59,15 +59,36 @@ interface SparkVisual {
   scale: number
 }
 
+interface PlacementLaunch {
+  entity: Entity
+  start: Vector3
+  target: Vector3
+  scale: Vector3
+  rotation: Quaternion
+  age: number
+  duration: number
+  arcHeight: number
+}
+
 const solidVisuals: SolidVisual[] = []
 const sparkVisuals: SparkVisual[] = []
+const placementLaunches: PlacementLaunch[] = []
 let celebrationRound = -1
 let celebrationPhase = ''
 let celebrationPhaseElapsed = 0
 let celebrationExploded = false
 let celebrationActive = false
 
-let arenaEntity: Entity | undefined
+const DBC_SCENE_MODELS = [
+  'assets/scene/Models/DBC/AS_ENVIROMENT_20260824.glb',
+  'assets/scene/Models/DBC/Particles.glb',
+  'assets/scene/Models/DBC/Plarform_light_L.glb',
+  'assets/scene/Models/DBC/Plarform_light_R.glb',
+  'assets/scene/Models/DBC/Top_dome01.glb',
+  'assets/scene/Models/DBC/Top_dome02.glb'
+]
+
+let arenaEntities: Entity[] | undefined
 let renderedStateKey = ''
 let getSelectedPart: () => PartType = () => 'CUBE'
 
@@ -119,6 +140,21 @@ function removeVisualEntity(entity: Entity): void {
   } catch (_) {}
 }
 
+function removePlacementLaunch(index: number): void {
+  const launch = placementLaunches[index]
+  if (!launch) return
+  try {
+    engine.removeEntity(launch.entity)
+  } catch (_) {}
+  placementLaunches.splice(index, 1)
+}
+
+function clearPlacementLaunches(): void {
+  for (let index = placementLaunches.length - 1; index >= 0; index--) {
+    removePlacementLaunch(index)
+  }
+}
+
 function clearVisualEntities(): void {
   for (const entity of visualEntities) {
     try {
@@ -129,6 +165,55 @@ function clearVisualEntities(): void {
   recentClicks.clear()
   solidVisuals.length = 0
   sparkVisuals.length = 0
+}
+
+function playerLaunchStart(target: Vector3): Vector3 {
+  const fallback = Vector3.create(target.x, target.y + 2.2, target.z + 2)
+  if (!Transform.has(engine.PlayerEntity)) return fallback
+
+  const player = Transform.get(engine.PlayerEntity).position
+  const dx = target.x - player.x
+  const dz = target.z - player.z
+  const distance = Math.max(0.001, Math.sqrt(dx * dx + dz * dz))
+  return Vector3.create(
+    player.x + (dx / distance) * 0.9,
+    player.y + 1.45,
+    player.z + (dz / distance) * 0.9
+  )
+}
+
+function spawnPlacementLaunch(slot: SlotDefinition): void {
+  const target = slotPosition(slot)
+  const start = playerLaunchStart(target)
+  const entity = engine.addEntity()
+  const scale = Vector3.scale(slotScale(slot), mobileLiteMode() ? 0.75 : 0.9)
+  const dx = target.x - start.x
+  const dz = target.z - start.z
+  const distance = Math.sqrt(dx * dx + dz * dz)
+
+  Transform.create(entity, {
+    position: start,
+    scale,
+    rotation: partRotation(slot.requiredPart)
+  })
+  GltfContainer.create(entity, {
+    src: PART_GLB[slot.requiredPart],
+    visibleMeshesCollisionMask: 0,
+    invisibleMeshesCollisionMask: 0
+  })
+
+  placementLaunches.push({
+    entity,
+    start,
+    target,
+    scale,
+    rotation: partRotation(slot.requiredPart),
+    age: 0,
+    duration: mobileLiteMode() ? 0.42 : 0.55,
+    arcHeight: Math.max(1.1, Math.min(3.4, distance * 0.16))
+  })
+
+  while (placementLaunches.length > 8) removePlacementLaunch(0)
 }
 
 function createGhost(slot: SlotDefinition): void {
@@ -270,6 +355,7 @@ function onSlotClick(slot: SlotDefinition): void {
     onWrongPart(slot.requiredPart)
     return
   }
+  if (!noCooldownActive && !canStartPlacementCooldown(selectedPart, 'manual')) return
 
   recentClicks.set(slot.slotId, now)
   flashSlot(slot, Color4.create(1, 1, 0.5, 1))
@@ -279,17 +365,20 @@ function onSlotClick(slot: SlotDefinition): void {
 }
 
 function setupArena(): void {
-  if (arenaEntity !== undefined) return
-  arenaEntity = engine.addEntity()
-  Transform.create(arenaEntity, {
-    position: Vector3.create(SCENE_CENTER.x, SCENE_CENTER.y + 0.2, SCENE_CENTER.z),
-    rotation: Quaternion.Identity(),
-    scale: Vector3.One()
-  })
-  GltfContainer.create(arenaEntity, {
-    src: 'assets/scene/Models/DBC/DBCENVIRONMENT_20260809.glb',
-    visibleMeshesCollisionMask: ColliderLayer.CL_PHYSICS,
-    invisibleMeshesCollisionMask: ColliderLayer.CL_PHYSICS
+  if (arenaEntities !== undefined) return
+  arenaEntities = DBC_SCENE_MODELS.map((src) => {
+    const entity = engine.addEntity()
+    Transform.create(entity, {
+      position: Vector3.create(SCENE_CENTER.x, SCENE_CENTER.y + 0.2, SCENE_CENTER.z),
+      rotation: Quaternion.Identity(),
+      scale: Vector3.One()
+    })
+    GltfContainer.create(entity, {
+      src,
+      visibleMeshesCollisionMask: ColliderLayer.CL_PHYSICS,
+      invisibleMeshesCollisionMask: ColliderLayer.CL_PHYSICS
+    })
+    return entity
   })
 }
 
@@ -300,7 +389,10 @@ export function setupEntities(selectedPartProvider: () => PartType): void {
   room.onMessage('attachResult', (data) => {
     if (data.ok) {
       const slot = getTemplate(getClientSnapshot().templateId)?.find((item) => item.slotId === data.slotId)
-      if (slot) flashSlot(slot, Color4.create(0.2, 1, 0.85, 1))
+      if (slot) {
+        spawnPlacementLaunch(slot)
+        flashSlot(slot, Color4.create(0.2, 1, 0.85, 1))
+      }
       return
     }
     recentClicks.delete(data.slotId)
@@ -361,6 +453,41 @@ export function reconcileScene(): void {
   }
 
   renderedStateKey = stateKey
+}
+
+export function placementLaunchSystem(dt: number): void {
+  const safeDt = Math.min(Math.max(dt, 0), 0.1)
+  for (let index = placementLaunches.length - 1; index >= 0; index--) {
+    const launch = placementLaunches[index]
+    launch.age += safeDt
+    const progress = Math.min(1, launch.age / launch.duration)
+    const eased = 1 - Math.pow(1 - progress, 3)
+    const arc = Math.sin(progress * Math.PI) * launch.arcHeight
+
+    if (!Transform.has(launch.entity)) {
+      placementLaunches.splice(index, 1)
+      continue
+    }
+
+    const transform = Transform.getMutable(launch.entity)
+    transform.position = Vector3.create(
+      launch.start.x + (launch.target.x - launch.start.x) * eased,
+      launch.start.y + (launch.target.y - launch.start.y) * eased + arc,
+      launch.start.z + (launch.target.z - launch.start.z) * eased
+    )
+    const pulse = 0.86 + Math.sin(progress * Math.PI) * 0.18
+    transform.scale = Vector3.create(
+      launch.scale.x * pulse,
+      launch.scale.y * pulse,
+      launch.scale.z * pulse
+    )
+    transform.rotation = Quaternion.multiply(
+      launch.rotation,
+      Quaternion.fromEulerDegrees(progress * 180, progress * 260, progress * 90)
+    )
+
+    if (progress >= 1) removePlacementLaunch(index)
+  }
 }
 
 function restoreSolidVisuals(): void {
@@ -733,6 +860,8 @@ export function perfectTemplateAnimationSystem(dt: number): void {
 
 export function clearAllVisuals(): void {
   clearVisualEntities()
+  clearPlacementLaunches()
   renderedStateKey = ''
 }
+
 

@@ -6,10 +6,11 @@ import { Color4, Quaternion, Vector3 } from '@dcl/sdk/math'
 import { movePlayerTo } from '~system/RestrictedActions'
 import { ReactEcsRenderer, UiEntity, Label, ReactEcs } from '@dcl/sdk/react-ecs'
 import {
-  PART_TYPES, PART_GLB, PART_LABEL, PART_SYMBOL, PartType,
+  PART_TYPES, PART_GLB, PART_LABEL, PartType,
   ARTIFACT_LABEL, ARTIFACT_PRICE_CRYSTALS, ARTIFACT_DURATION_MS, ArtifactType,
   SCENE_CENTER, PERFORMANCE_LABEL, PlacementMode, PLACEMENT_COOLDOWN_MS, RoundPhase, GLB_SCALE,
-  COUNTDOWN_SECONDS, PERFORMANCE_DURATION_SECONDS, RESET_DELAY_SECONDS
+  COUNTDOWN_SECONDS, PERFORMANCE_DURATION_SECONDS, RESET_DELAY_SECONDS,
+  POINTS_MANUAL_PIECE, POINTS_AUTO_PIECE, communityTierReward
 } from './shared/constants'
 import { getTemplate, SlotDefinition } from './shared/templates'
 import { getLevelProgress, getScraperTitle } from './shared/progression'
@@ -37,11 +38,15 @@ let selectedIndex = 0
 // Persistent carried-piece entities.
 let feedbackText = ''
 let feedbackTimer = 0
+let clickFlashKey = ''
+let clickFlashUntil = 0
 let showOnboarding = false
 let onboardingAlpha = 0
 let onboardingDismissed = true
 let floatTime = 0
 let ambientEntity: Entity = 0 as Entity
+let currentMusicClip = ''
+let nonGameMusicElapsed = 0
 const shoulderEntities: Entity[] = []
 const SHOULDER_SCALE = 0.272
 let carriedVisible = false
@@ -51,6 +56,7 @@ let rankingPanelOpen = false
 let inventoryPanelOpen = false
 let activePlayersPanelOpen = false
 let shopPanelOpen = false
+let communityPanelOpen = false
 type RankingTab = 'SESSION' | 'DAILY' | 'WEEKLY' | 'TOTAL'
 const RANKING_TABS: RankingTab[] = ['SESSION', 'DAILY', 'WEEKLY', 'TOTAL']
 let rankingTab: RankingTab = 'SESSION'
@@ -66,9 +72,15 @@ let tutorialFirstRoundActive = false
 let tutorialGuideActive = false
 let tutorialGuideStep = 0
 let tutorialGuideJoinAfter = false
+let tutorialGuideSkipAllowed = false
 let tutorialGuideQueued = false
+let tutorialAutoStarted = false
 let tutorialPieceKeyChanged = false
 let tutorialPieceButtonChanged = false
+let tutorialFKeyPressed = false
+let tutorialPieceKeyPresses = 0
+let tutorialPieceButtonPresses = 0
+let tutorialFKeyPresses = 0
 let tutorialCameraEntity: Entity | null = null
 let tutorialCameraUnavailable = false
 let tutorialPracticePlacedMask = 0
@@ -85,6 +97,7 @@ let lastPlacementCooldownPart: PartType = 'CUBE'
 let escapeListenerReady = false
 const TUTORIAL_ENABLED = true
 const FEEDBACK_DURATION = 2.5
+const CLICK_FLASH_MS = 260
 
 interface TutorialSlide {
   marker: string
@@ -159,7 +172,7 @@ const TUTORIAL_INFO_SLIDES: TutorialSlide[] = [
 ]
 let TUTORIAL_SLIDES: TutorialSlide[] = [...TUTORIAL_CORE_SLIDES, ...TUTORIAL_INFO_SLIDES]
 
-type TutorialGuideAction = 'NEXT' | 'PROFILE' | 'RANKING' | 'INVENTORY' | 'ARTIFACT_1' | 'ARTIFACT_2' | 'ARTIFACT_REVIEW' | 'PIECE' | 'PIECE_BUTTONS' | 'COMPLETE'
+type TutorialGuideAction = 'NEXT' | 'PROFILE' | 'RANKING' | 'INVENTORY' | 'ARTIFACT_1' | 'ARTIFACT_2' | 'ARTIFACT_REVIEW' | 'PIECE' | 'F' | 'PIECE_BUTTONS' | 'COMPLETE'
 type TutorialPieceSource = 'key' | 'button'
 
 interface TutorialGuideStep {
@@ -167,6 +180,8 @@ interface TutorialGuideStep {
   message: string
   cameraPosition: { x: number; y: number; z: number }
   cameraRotation: { pitch: number; yaw: number; roll: number }
+  desktopImage?: string
+  mobileImage?: string
 }
 
 const TUTORIAL_GUIDE_STEPS: TutorialGuideStep[] = [
@@ -174,55 +189,41 @@ const TUTORIAL_GUIDE_STEPS: TutorialGuideStep[] = [
     action: 'NEXT',
     message: 'Tutorial: Alien Scrapyard is a cooperative build game. Complete the template together before time runs out to earn points, scrap and crystals. First, let us check the main menus.',
     cameraPosition: { x: SCENE_CENTER.x, y: 13, z: SCENE_CENTER.z + 11 },
-    cameraRotation: { pitch: 25, yaw: 180, roll: 0 }
+    cameraRotation: { pitch: 25, yaw: 180, roll: 0 },
+    desktopImage: 'fase1.png',
+    mobileImage: 'fase1.png'
   },
   {
-    action: 'PROFILE',
-    message: 'Tutorial: open PROFILE. It shows your level, title and long term progress. F closes menus when you are browsing UI.',
-    cameraPosition: { x: SCENE_CENTER.x, y: 13, z: SCENE_CENTER.z + 11 },
-    cameraRotation: { pitch: 25, yaw: 180, roll: 0 }
+    action: 'NEXT',
+    message: 'E changes the selected block. F auto-places the selected block. Tap or click a matching slot for full points.',
+    cameraPosition: { x: SCENE_CENTER.x, y: 13, z: SCENE_CENTER.z + 14 },
+    cameraRotation: { pitch: 25, yaw: 180, roll: 0 },
+    desktopImage: 'FaseE.png',
+    mobileImage: 'FaseE_mov.png'
   },
   {
-    action: 'RANKING',
-    message: 'Tutorial: now open RANKING. Rankings compare points, rounds, MVP and other stats. Use E and F to move through leaderboard views.',
-    cameraPosition: { x: SCENE_CENTER.x, y: 13, z: SCENE_CENTER.z + 11 },
-    cameraRotation: { pitch: 25, yaw: 180, roll: 0 }
+    action: 'NEXT',
+    message: 'Manual placement gives more points. Auto placement is easier, but it has a longer cooldown and lower score.',
+    cameraPosition: { x: SCENE_CENTER.x, y: 13, z: SCENE_CENTER.z + 14 },
+    cameraRotation: { pitch: 25, yaw: 180, roll: 0 },
+    desktopImage: 'FaseF.png',
+    mobileImage: 'FaseF_mov.png'
   },
   {
-    action: 'INVENTORY',
-    message: 'Tutorial: now open INVENTORY. This is where your crystals, scrap, objects and equipped artifacts live.',
-    cameraPosition: { x: SCENE_CENTER.x, y: 13, z: SCENE_CENTER.z + 11 },
-    cameraRotation: { pitch: 25, yaw: 180, roll: 0 }
+    action: 'NEXT',
+    message: 'Artifacts are equipped from inventory and used with 1 and 2 during active build. They are consumed when used.',
+    cameraPosition: { x: SCENE_CENTER.x, y: 13, z: SCENE_CENTER.z + 14 },
+    cameraRotation: { pitch: 25, yaw: 180, roll: 0 },
+    desktopImage: 'faseclick.png',
+    mobileImage: 'faseclick.png'
   },
   {
-    action: 'ARTIFACT_1',
-    message: 'Tutorial: choose any object slot in your inventory to equip your first starter artifact. The order does not matter.',
-    cameraPosition: { x: SCENE_CENTER.x, y: 13, z: SCENE_CENTER.z + 11 },
-    cameraRotation: { pitch: 25, yaw: 180, roll: 0 }
-  },
-  {
-    action: 'ARTIFACT_2',
-    message: 'Tutorial: choose one more object slot to equip your second artifact. You can carry two active artifacts per round.',
-    cameraPosition: { x: SCENE_CENTER.x, y: 13, z: SCENE_CENTER.z + 11 },
-    cameraRotation: { pitch: 25, yaw: 180, roll: 0 }
-  },
-  {
-    action: 'ARTIFACT_REVIEW',
-    message: 'Good. Artifacts are special tools: during active build, press 1 or 2 to use the equipped ones. They are consumed when used and each one has its own cooldown.',
-    cameraPosition: { x: SCENE_CENTER.x, y: 13, z: SCENE_CENTER.z + 11 },
-    cameraRotation: { pitch: 25, yaw: 180, roll: 0 }
-  },
-  {
-    action: 'PIECE',
-    message: 'Tutorial: press E several times to cycle cube, cylinder and pyramid. E only changes the selected piece here, so try it freely, then press NEXT.',
-    cameraPosition: { x: 24, y: 7.2, z: 12.8 },
-    cameraRotation: { pitch: 12, yaw: 0, roll: 0 }
-  },
-  {
-    action: 'PIECE_BUTTONS',
-    message: 'Tutorial: now tap or click the piece buttons. On mobile this selector is like a direct E, and in play/practice tapping also places that piece automatically. Try it freely, then press NEXT.',
-    cameraPosition: { x: 24, y: 7.2, z: 12.8 },
-    cameraRotation: { pitch: 12, yaw: 0, roll: 0 }
+    action: 'NEXT',
+    message: 'Community tiers grow with everyone points. Higher tiers add extra crystals and bonus points at round summary.',
+    cameraPosition: { x: SCENE_CENTER.x, y: 13, z: SCENE_CENTER.z + 14 },
+    cameraRotation: { pitch: 25, yaw: 180, roll: 0 },
+    desktopImage: 'fase1.png',
+    mobileImage: 'fase1.png'
   },
   {
     action: 'COMPLETE',
@@ -230,6 +231,15 @@ const TUTORIAL_GUIDE_STEPS: TutorialGuideStep[] = [
     cameraPosition: { x: 37, y: 4.7, z: 5.7 },
     cameraRotation: { pitch: 10, yaw: 0, roll: 0 }
   }
+]
+
+const PRACTICE_HINTS = [
+  `Manual points: Cube ${POINTS_MANUAL_PIECE.CUBE}, Cylinder ${POINTS_MANUAL_PIECE.CYLINDER}, Pyramid ${POINTS_MANUAL_PIECE.CONE}.`,
+  `Auto-place points: Cube ${POINTS_AUTO_PIECE.CUBE}, Cylinder ${POINTS_AUTO_PIECE.CYLINDER}, Pyramid ${POINTS_AUTO_PIECE.CONE}.`,
+  'Artifacts are equipped from inventory and used with 1 and 2 during active build.',
+  'The artifact shop sells temporary tools. They are consumed when used.',
+  'Community tiers add bonus crystals and bonus points at round summary.',
+  'Tap or click matching floating slots for the best score. F is easier but gives fewer points.'
 ]
 function currentTutorialGuideStep(): TutorialGuideStep | null {
   return tutorialGuideActive ? TUTORIAL_GUIDE_STEPS[Math.min(tutorialGuideStep, TUTORIAL_GUIDE_STEPS.length - 1)] : null
@@ -240,7 +250,18 @@ function currentTutorialAction(): TutorialGuideAction | null {
 }
 
 function allowTutorialAction(action: TutorialGuideAction): boolean {
-  return !tutorialGuideActive || currentTutorialAction() === action
+  if (!tutorialGuideActive) return true
+  if (currentTutorialAction() === action) return true
+
+  const menuActions: TutorialGuideAction[] = ['PROFILE', 'RANKING', 'INVENTORY']
+  if (!menuActions.includes(action)) return false
+
+  const currentAction = currentTutorialAction()
+  const menuFlowActions: TutorialGuideAction[] = ['PROFILE', 'RANKING', 'INVENTORY', 'ARTIFACT_1', 'ARTIFACT_2', 'ARTIFACT_REVIEW']
+  if (!currentAction || !menuFlowActions.includes(currentAction)) return false
+
+  const requestedStep = TUTORIAL_GUIDE_STEPS.findIndex((step) => step.action === action)
+  return requestedStep >= 0 && requestedStep < tutorialGuideStep
 }
 function tutorialPieceStepComplete(): boolean {
   return tutorialPieceKeyChanged && tutorialPieceButtonChanged
@@ -249,10 +270,16 @@ function tutorialPieceStepComplete(): boolean {
 function markTutorialPieceAction(source: TutorialPieceSource): void {
   const step = currentTutorialGuideStep()
   if (!step) return
-  if (step.action === 'PIECE' && source === 'key') tutorialPieceKeyChanged = true
-  if (step.action === 'PIECE_BUTTONS' && source === 'button') tutorialPieceButtonChanged = true
+  if (step.action === 'PIECE' && source === 'key') {
+    tutorialPieceKeyPresses += 1
+    tutorialPieceKeyChanged = tutorialPieceKeyPresses >= 2
+  }
+  if (step.action === 'PIECE_BUTTONS' && source === 'button') {
+    tutorialPieceButtonPresses += 1
+    tutorialPieceButtonChanged = tutorialPieceButtonPresses >= 1
+  }
 }
-const TUTORIAL_PRACTICE_ORIGIN = Vector3.create(59, 1.5, -2)
+const TUTORIAL_PRACTICE_ORIGIN = Vector3.create(50, 1, -1.7)
 const TUTORIAL_PRACTICE_SLOTS: SlotDefinition[] = [
   { slotId: 'tp0', requiredPart: 'CUBE',     position: { x: TUTORIAL_PRACTICE_ORIGIN.x - 0.55, y: TUTORIAL_PRACTICE_ORIGIN.y + 1.0, z: TUTORIAL_PRACTICE_ORIGIN.z }, scale: { x: 1, y: 1, z: 1 }, label: 'Practice Base Left' },
   { slotId: 'tp1', requiredPart: 'CUBE',     position: { x: TUTORIAL_PRACTICE_ORIGIN.x + 0.55, y: TUTORIAL_PRACTICE_ORIGIN.y + 1.0, z: TUTORIAL_PRACTICE_ORIGIN.z }, scale: { x: 1, y: 1, z: 1 }, label: 'Practice Base Right' },
@@ -399,7 +426,9 @@ function setupTutorialPractice(): void {
 
 function movePlayerToPractice(): void {
   void movePlayerTo({
-    newRelativePosition: { x: 50, y: 1.5, z: -6 }
+    newRelativePosition: { x: 50, y: 1, z: -8 },
+    cameraTarget: { x: TUTORIAL_PRACTICE_ORIGIN.x, y: TUTORIAL_PRACTICE_ORIGIN.y + 2.4, z: TUTORIAL_PRACTICE_ORIGIN.z },
+    avatarTarget: { x: TUTORIAL_PRACTICE_ORIGIN.x, y: TUTORIAL_PRACTICE_ORIGIN.y + 1.4, z: TUTORIAL_PRACTICE_ORIGIN.z }
   }).catch((error) => console.log(`[TUTORIAL] practice move failed: ${error}`))
 }
 
@@ -408,7 +437,7 @@ function resetTutorialPracticeIfFull(): void {
   if (tutorialPracticePlacedMask !== fullMask) return
   showFeedback('Practice template complete - restarting')
   setTimeout(() => {
-    if (!tutorialGuideActive || currentTutorialAction() !== 'COMPLETE') return
+    if (!tutorialPracticeAvailable()) return
     tutorialPracticePlacedMask = 0
     renderTutorialPractice()
   }, 650)
@@ -420,6 +449,11 @@ function advanceTutorialPracticeGuide(action: 'MANUAL' | 'F' | 'ARTIFACT_1' | 'A
   else if (tutorialPracticeGuideStep === 1 && action === 'F') tutorialPracticeGuideStep = 2
   else if (tutorialPracticeGuideStep === 2 && action === 'ARTIFACT_1') tutorialPracticeGuideStep = 3
   else if (tutorialPracticeGuideStep === 3 && action === 'ARTIFACT_2') tutorialPracticeGuideStep = 4
+}
+
+function tutorialPracticeAvailable(): boolean {
+  const action = currentTutorialAction()
+  return tutorialGuideActive && action !== null && action !== 'NEXT'
 }
 
 function tutorialPracticeCommitSlot(slotIndex: number, mode: PlacementMode): void {
@@ -434,7 +468,7 @@ function tutorialPracticeCommitSlot(slotIndex: number, mode: PlacementMode): voi
 }
 
 function tutorialPracticeTrySlot(slot: SlotDefinition): void {
-  if (!tutorialGuideActive || currentTutorialAction() !== 'COMPLETE') return
+  if (!tutorialPracticeAvailable()) return
   const slotIndex = TUTORIAL_PRACTICE_SLOTS.findIndex((item) => item.slotId === slot.slotId)
   if (slotIndex < 0) return
   if (((tutorialPracticePlacedMask >> slotIndex) & 1) === 1) return
@@ -466,7 +500,7 @@ function tutorialPracticePlacePart(part: PartType, mode: PlacementMode): boolean
 }
 
 function tutorialPracticePlaceSelectedPart(): void {
-  if (!tutorialGuideActive || currentTutorialAction() !== 'COMPLETE') return
+  if (!tutorialPracticeAvailable()) return
   setupTutorialPractice()
   const selectedPart = getSelectedPart()
   const now = Date.now()
@@ -479,6 +513,21 @@ function tutorialPracticePlaceSelectedPart(): void {
     return
   }
   advanceTutorialPracticeGuide('F')
+}
+
+function reloadTutorialArtifact(slotIndex: number, preferredType: ArtifactType): void {
+  let replacement = preferredType
+  if (tutorialArtifactCount(replacement) <= 0) {
+    const fallback = TUTORIAL_ARTIFACT_TYPES.find((artifact) => tutorialArtifactCount(artifact) > 0)
+    if (!fallback) {
+      tutorialEquippedArtifacts.splice(slotIndex, 1)
+      return
+    }
+    replacement = fallback
+  }
+
+  tutorialArtifactInventoryCounts[replacement] = Math.max(0, tutorialArtifactCount(replacement) - 1)
+  tutorialEquippedArtifacts[slotIndex] = replacement
 }
 
 function useTutorialPracticeArtifact(slotIndex: number): void {
@@ -510,6 +559,7 @@ function useTutorialPracticeArtifact(slotIndex: number): void {
   }
 
   advanceTutorialPracticeGuide(slotIndex === 0 ? 'ARTIFACT_1' : 'ARTIFACT_2')
+  reloadTutorialArtifact(slotIndex, artifact)
 }
 function tutorialCamera(): Entity | null {
   if (tutorialCameraEntity !== null || tutorialCameraUnavailable) return tutorialCameraEntity
@@ -531,21 +581,23 @@ function tutorialCamera(): Entity | null {
 
 function updateTutorialCamera(): void {
   const step = currentTutorialGuideStep()
-  if (step?.action === 'PIECE' || step?.action === 'PIECE_BUTTONS' || step?.action === 'COMPLETE') {
+  if (step?.action === 'PIECE' || step?.action === 'F' || step?.action === 'PIECE_BUTTONS' || step?.action === 'COMPLETE') {
     profilePanelOpen = false
     rankingPanelOpen = false
     inventoryPanelOpen = false
     activePlayersPanelOpen = false
     shopPanelOpen = false
+    communityPanelOpen = false
   }
   closeLeaderboardCamera()
-  setCarriedVisible(step?.action === 'PIECE' || step?.action === 'PIECE_BUTTONS' || step?.action === 'COMPLETE')
-  if (step?.action === 'PIECE' || step?.action === 'PIECE_BUTTONS') movePlayerToStart()
-  if (step?.action === 'COMPLETE') {
-    tutorialPracticeGuideStep = 0
-    tutorialPracticeNoCooldownUntil = 0
-    clearTutorialPractice()
-    if (tutorialEquippedArtifacts.length < 2) tutorialEquippedArtifacts = ['TRIPLE_PLACE', 'COMPLETE_TEMPLATE']
+  setCarriedVisible(step !== null && step.action !== 'NEXT')
+  if (step && step.action !== 'NEXT') {
+    if (step.action === 'COMPLETE') {
+      tutorialPracticeGuideStep = 0
+      tutorialPracticeNoCooldownUntil = 0
+      clearTutorialPractice()
+      if (tutorialEquippedArtifacts.length < 2) tutorialEquippedArtifacts = ['TRIPLE_PLACE', 'COMPLETE_TEMPLATE']
+    }
     movePlayerToPractice()
     setupTutorialPractice()
     releaseTutorialCamera()
@@ -568,17 +620,25 @@ function releaseTutorialCamera(): void {
   try { MainCamera.createOrReplace(engine.CameraEntity, { virtualCameraEntity: undefined }) } catch (_) {}
 }
 
-function startTutorialGuide(joinAfter: boolean): void {
+function startTutorialGuide(joinAfter: boolean, skipAllowed = joinAfter): void {
   if (!TUTORIAL_ENABLED) return
+  const snapshot = getClientSnapshot()
+  if (snapshot.playerStatus === 'ACTIVE' || snapshot.playerStatus === 'QUEUED') requestLeaveGame()
   tutorialVisible = false
+  tutorialModeActive = false
   tutorialMandatory = false
   joinPromptVisible = false
   tutorialGuideActive = true
   tutorialGuideStep = 0
   tutorialGuideJoinAfter = joinAfter
+  tutorialGuideSkipAllowed = skipAllowed
   tutorialGuideQueued = false
   tutorialPieceKeyChanged = false
   tutorialPieceButtonChanged = false
+  tutorialFKeyPressed = false
+  tutorialPieceKeyPresses = 0
+  tutorialPieceButtonPresses = 0
+  tutorialFKeyPresses = 0
   tutorialPracticeGuideStep = 0
   tutorialPracticeNoCooldownUntil = 0
   tutorialEquippedArtifacts = []
@@ -588,17 +648,25 @@ function startTutorialGuide(joinAfter: boolean): void {
   inventoryPanelOpen = false
   activePlayersPanelOpen = false
   shopPanelOpen = false
+  communityPanelOpen = false
   updateTutorialCamera()
 }
 
 function finishTutorialGuide(joinGameNow = false): void {
   const shouldJoin = joinGameNow || tutorialGuideJoinAfter
   tutorialGuideActive = false
+  tutorialModeActive = false
+  tutorialVisible = false
   tutorialGuideStep = 0
   tutorialGuideJoinAfter = false
+  tutorialGuideSkipAllowed = false
   tutorialGuideQueued = false
   tutorialPieceKeyChanged = false
   tutorialPieceButtonChanged = false
+  tutorialFKeyPressed = false
+  tutorialPieceKeyPresses = 0
+  tutorialPieceButtonPresses = 0
+  tutorialFKeyPresses = 0
   releaseTutorialCamera()
   tutorialPracticeGuideStep = 0
   tutorialPracticeNoCooldownUntil = 0
@@ -615,6 +683,10 @@ function advanceTutorialGuide(): void {
   tutorialGuideStep = Math.min(tutorialGuideStep + 1, TUTORIAL_GUIDE_STEPS.length - 1)
   tutorialPieceKeyChanged = false
   tutorialPieceButtonChanged = false
+  tutorialFKeyPressed = false
+  tutorialPieceKeyPresses = 0
+  tutorialPieceButtonPresses = 0
+  tutorialFKeyPresses = 0
   updateTutorialCamera()
 }
 
@@ -651,12 +723,22 @@ function advanceTutorial(): void {
   finishTutorial()
 }
 function closeGameUi(): void {
-  if (tutorialGuideActive) return
+  if (tutorialGuideActive) {
+    profilePanelOpen = false
+    rankingPanelOpen = false
+    inventoryPanelOpen = false
+    activePlayersPanelOpen = false
+    shopPanelOpen = false
+    communityPanelOpen = false
+    tutorialVisible = false
+    return
+  }
   profilePanelOpen = false
   rankingPanelOpen = false
   inventoryPanelOpen = false
   activePlayersPanelOpen = false
   shopPanelOpen = false
+  communityPanelOpen = false
   joinPromptVisible = false
   if (!tutorialMandatory) tutorialVisible = false
 }
@@ -687,7 +769,7 @@ function needsDailyTutorial(): boolean {
 export function openDailyTutorialGuide(): void {
   const snapshot = getClientSnapshot()
   if (!snapshot.profileLoaded) return
-  startTutorialGuide(true)
+  startTutorialGuide(true, true)
 }
 
 export function openArtifactShop(): void {
@@ -702,6 +784,48 @@ export function openArtifactShop(): void {
   profilePanelOpen = false
   rankingPanelOpen = false
   activePlayersPanelOpen = false
+  communityPanelOpen = false
+}
+
+export function openInventoryPanel(): void {
+  inventoryPanelOpen = true
+  shopPanelOpen = false
+  profilePanelOpen = false
+  rankingPanelOpen = false
+  activePlayersPanelOpen = false
+  communityPanelOpen = false
+}
+
+export function openProfilePanel(): void {
+  profilePanelOpen = true
+  rankingPanelOpen = false
+  inventoryPanelOpen = false
+  activePlayersPanelOpen = false
+  shopPanelOpen = false
+  communityPanelOpen = false
+}
+
+export function openRankingPanel(): void {
+  rankingPanelOpen = true
+  profilePanelOpen = false
+  inventoryPanelOpen = false
+  activePlayersPanelOpen = false
+  shopPanelOpen = false
+  communityPanelOpen = false
+  requestLeaderboards()
+}
+
+export function openCommunityPanel(): void {
+  communityPanelOpen = true
+  profilePanelOpen = false
+  rankingPanelOpen = false
+  inventoryPanelOpen = false
+  activePlayersPanelOpen = false
+  shopPanelOpen = false
+}
+
+export function openTutorialPanel(): void {
+  startTutorialGuide(false, true)
 }
 
 export function getSelectedPart(): PartType {
@@ -727,14 +851,15 @@ function selectPart(index: number, autoPlace = false, source: TutorialPieceSourc
   if (tutorialGuideActive) {
     const action = currentTutorialAction()
     if (action === 'PIECE' && source !== 'key') return
-    if (action === 'PIECE_BUTTONS' && source !== 'button') return
-    if (action !== 'PIECE' && action !== 'PIECE_BUTTONS' && action !== 'COMPLETE') return
+    if (action === 'F' && source !== 'key') return
+    if (action === 'PIECE_BUTTONS' && source !== 'button' && source !== 'key') return
+    if (action !== 'PIECE' && action !== 'F' && action !== 'PIECE_BUTTONS' && action !== 'COMPLETE') return
   }
   selectedIndex = index
   markTutorialPieceAction(source)
   applyShoulderVisibility()
   playPress()
-  if (tutorialGuideActive && currentTutorialAction() === 'COMPLETE' && source === 'button') {
+  if (tutorialGuideActive && (currentTutorialAction() === 'COMPLETE' || currentTutorialAction() === 'PIECE_BUTTONS') && source === 'button') {
     tutorialPracticePlaceSelectedPart()
   }
   dismissOnboarding()
@@ -777,6 +902,13 @@ export function startPlacementCooldown(part: PartType, mode: PlacementMode): voi
   lastPlacementCooldownAt = Date.now()
 }
 
+export function canStartPlacementCooldown(part: PartType, mode: PlacementMode): boolean {
+  const snapshot = getClientSnapshot()
+  if (Date.now() < snapshot.noCooldownUntil) return true
+  const requiredCooldown = Math.max(lastPlacementCooldownMs, PLACEMENT_COOLDOWN_MS[mode][part])
+  return Date.now() - lastPlacementCooldownAt >= requiredCooldown
+}
+
 export function setCinematicCameraActive(active: boolean): void {
   cinematicCameraActive = active
 }
@@ -789,6 +921,12 @@ function cinematicSecondsLeft(phase: RoundPhase, secondsLeftInPhase: number): nu
 }
 
 const SFX_VOICES = 3
+const GAME_MUSIC_CLIP = 'assets/sounds/ambient.mp3'
+const NON_GAME_MUSIC_CLIPS = [
+  'assets/sounds/Alien scrapyard (2).mp3',
+  'assets/sounds/Alien scrapyard (3).mp3'
+]
+const MUSIC_VOLUME = 0.35
 const successVoices: Entity[] = []
 const pressVoices: Entity[] = []
 const wrongVoices: Entity[] = []
@@ -829,7 +967,41 @@ function initAudio(): void {
     pressVoices.push(createVoiceEntity())
     wrongVoices.push(createVoiceEntity())
   }
-  ambientEntity = 0 as Entity
+  ambientEntity = engine.addEntity()
+  Transform.create(ambientEntity, {
+    position: Vector3.create(SCENE_CENTER.x, SCENE_CENTER.y + 2, SCENE_CENTER.z),
+    rotation: Quaternion.Identity(),
+    scale: Vector3.One()
+  })
+  updateMusic(false, 0)
+}
+
+function updateMusic(isPlaying: boolean, dt: number): void {
+  if (ambientEntity === (0 as Entity)) return
+
+  if (isPlaying) {
+    nonGameMusicElapsed = 0
+  } else {
+    nonGameMusicElapsed += Math.max(0, dt)
+  }
+
+  const clip = isPlaying
+    ? GAME_MUSIC_CLIP
+    : NON_GAME_MUSIC_CLIPS[Math.floor(nonGameMusicElapsed / 120) % NON_GAME_MUSIC_CLIPS.length]
+
+  if (clip === currentMusicClip) return
+  currentMusicClip = clip
+  try {
+    AudioSource.createOrReplace(ambientEntity, {
+      audioClipUrl: clip,
+      playing: true,
+      loop: true,
+      volume: MUSIC_VOLUME,
+      global: true
+    })
+  } catch (_) {
+    currentMusicClip = ''
+  }
 }
 
 export function initShoulder(): void {
@@ -839,7 +1011,7 @@ export function initShoulder(): void {
     const entity = engine.addEntity()
     const show = carriedVisible && i === selectedIndex
     Transform.create(entity, {
-      position: Vector3.create(0.5, 1.5, -0.5),
+      position: Vector3.create(0.5, 1.5, -0.85),
       scale: show
         ? Vector3.create(SHOULDER_SCALE, SHOULDER_SCALE, SHOULDER_SCALE)
         : Vector3.Zero(),
@@ -874,8 +1046,8 @@ export function setCarriedVisible(visible: boolean): void {
 function joinGame(): void {
   const snapshot = getClientSnapshot()
   if (!snapshot.profileLoaded) return
-  if (needsDailyTutorial()) {
-    showFeedback('Talk to the guide first')
+  if (needsDailyTutorial() || !tutorialShownForParticipation) {
+    startTutorialGuide(true, true)
     return
   }
   tutorialShownForParticipation = true
@@ -889,6 +1061,7 @@ function leaveGame(): void {
   rankingPanelOpen = false
   inventoryPanelOpen = false
   activePlayersPanelOpen = false
+  communityPanelOpen = false
   requestLeaveGame()
 }
 
@@ -897,17 +1070,16 @@ export function hudInputSystem(_dt: number): void {
 
   const primaryPressed = inputSystem.isTriggered(InputAction.IA_PRIMARY, PointerEventType.PET_DOWN)
   const secondaryPressed = inputSystem.isTriggered(InputAction.IA_SECONDARY, PointerEventType.PET_DOWN)
-  const menuOpen = profilePanelOpen || rankingPanelOpen || inventoryPanelOpen || activePlayersPanelOpen || shopPanelOpen || tutorialVisible ||
+  const menuOpen = profilePanelOpen || rankingPanelOpen || inventoryPanelOpen || activePlayersPanelOpen || shopPanelOpen || communityPanelOpen || tutorialVisible ||
     (snapshot.playerStatus === 'SPECTATOR' && joinPromptVisible)
 
-  if (snapshot.playerStatus === 'SPECTATOR' && needsDailyTutorial() && secondaryPressed) {
-    requestCompleteTutorial(false)
-    joinPromptVisible = true
-    return
-  }
 
   if (tutorialGuideActive) {
     const step = currentTutorialGuideStep()
+    if (secondaryPressed && menuOpen) {
+      closeGameUi()
+      return
+    }
     if (step?.action === 'COMPLETE') {
       if (primaryPressed) selectPart((selectedIndex + 1) % PART_TYPES.length, false, 'key')
       if (secondaryPressed) tutorialPracticePlaceSelectedPart()
@@ -915,7 +1087,13 @@ export function hudInputSystem(_dt: number): void {
     }
     if (primaryPressed && step?.action === 'NEXT') completeTutorialGuideAction('NEXT')
     else if (primaryPressed && step?.action === 'ARTIFACT_REVIEW') completeTutorialGuideAction('ARTIFACT_REVIEW')
-    else if (primaryPressed && step?.action === 'PIECE') selectPart((selectedIndex + 1) % PART_TYPES.length, false, 'key')
+    else if (primaryPressed && (step?.action === 'PIECE' || step?.action === 'F' || step?.action === 'PIECE_BUTTONS')) selectPart((selectedIndex + 1) % PART_TYPES.length, false, 'key')
+    else if (secondaryPressed && step?.action === 'F') {
+      tutorialFKeyPresses += 1
+      tutorialPracticePlaceSelectedPart()
+      tutorialFKeyPressed = tutorialFKeyPresses >= 2
+      showFeedback('F auto-places the selected piece during active build')
+    }
     return
   }
 
@@ -951,6 +1129,11 @@ let blueFlashFired = false
 export function hudTickSystem(dt: number): void {
   // Clear build hints on phase changes.
   const snap = getClientSnapshot()
+  try { updateMusic(snap.playerStatus === 'ACTIVE', dt) } catch (_) {}
+  if (snap.profileLoaded && needsDailyTutorial() && !tutorialAutoStarted && !tutorialGuideActive) {
+    tutorialAutoStarted = true
+    startTutorialGuide(false, false)
+  }
   const phase = snap.phase
   const prevPhase = lastHudPhase
   if (phase !== lastHudPhase) {
@@ -962,6 +1145,7 @@ export function hudTickSystem(dt: number): void {
       rankingPanelOpen = false
       inventoryPanelOpen = false
       activePlayersPanelOpen = false
+      communityPanelOpen = false
     }
   }
   if (snap.playerStatus !== lastHudPlayerStatus) {
@@ -1014,7 +1198,7 @@ export function hudTickSystem(dt: number): void {
   const shoulderY = 1.5 + Math.sin(floatTime * 2.5) * 0.06
   for (const entity of shoulderEntities) {
     try {
-      Transform.getMutable(entity).position = Vector3.create(0.5, shoulderY, -0.5)
+      Transform.getMutable(entity).position = Vector3.create(0.5, shoulderY, -0.85)
     } catch (_) {}
   }
 }
@@ -1026,14 +1210,87 @@ const PART_UI_COLOR: Record<PartType, { r: number; g: number; b: number; a: numb
   CONE:     { r: 1,   g: 0.85, b: 0,   a: 1 }
 }
 
-const INVENTORY_OBJECT_SLOTS = Array.from({ length: 9 }, (_, index) => ({ id: `object-slot-${index}`, index }))
+const UI_IMAGE_ROOT = 'assets/images/ui/'
+const IMAUI_IMAGE_ROOT = 'assets/images/imaui/'
+const INVENTORY_IMAGE_ROOT = 'assets/images/inventario/'
+
+function uiImage(name: string) {
+  return {
+    textureMode: 'stretch' as const,
+    texture: { src: UI_IMAGE_ROOT + name, filterMode: 'tri-linear' as const }
+  }
+}
+
+function uiVariant(baseName: string, compactUi: boolean) {
+  return uiImage(`${baseName}_${compactUi ? 'mobile' : 'desktop'}.png`)
+}
+
+function clickFlash(key: string): void {
+  clickFlashKey = key
+  clickFlashUntil = Date.now() + CLICK_FLASH_MS
+}
+
+function clickFlashOverlay(key: string) {
+  return (
+    <UiEntity
+      uiTransform={{
+        positionType: 'absolute',
+        position: { top: 0, left: 0 },
+        width: '100%',
+        height: '100%',
+        display: clickFlashKey === key && Date.now() < clickFlashUntil ? 'flex' : 'none'
+      }}
+      uiBackground={{ color: { r: 0.38, g: 1, b: 0.62, a: 0.4 } }}
+    />
+  )
+}
+
+function imauiImage(name: string) {
+  return {
+    textureMode: 'stretch' as const,
+    texture: { src: IMAUI_IMAGE_ROOT + name, filterMode: 'tri-linear' as const }
+  }
+}
+
+function inventoryImage(name: string) {
+  return {
+    textureMode: 'stretch' as const,
+    texture: { src: INVENTORY_IMAGE_ROOT + name, filterMode: 'tri-linear' as const }
+  }
+}
+
+function tutorialGuideImage(step: TutorialGuideStep | null, compactUi: boolean): string | null {
+  if (!step) return null
+  return compactUi ? (step.mobileImage ?? step.desktopImage ?? null) : (step.desktopImage ?? step.mobileImage ?? null)
+}
+function partIcon(part: PartType) {
+  return uiImage(`${part.toLowerCase()}.png`)
+}
+
+function artifactThumbnail(artifact: ArtifactType, compactUi: boolean) {
+  const suffix = compactUi ? 'Mobile' : 'Desktop'
+  if (artifact === 'NO_COOLDOWN') return inventoryImage(`Rayo_${suffix}-${compactUi ? 76 : 75}.png`)
+  if (artifact === 'DOUBLE_PLACE') return inventoryImage(`doble_${suffix}-${compactUi ? 78 : 77}.png`)
+  if (artifact === 'TRIPLE_PLACE') return inventoryImage(`triple_${suffix}-${compactUi ? 80 : 79}.png`)
+  return inventoryImage(`full_${suffix}-${compactUi ? 82 : 81}.png`)
+}
+
+function inventoryArtifactImageSize(artifact: ArtifactType, compactUi: boolean) {
+  const scale = artifact === 'DOUBLE_PLACE' ? 2 : 3
+  const reduction = 0.85
+  const width = (compactUi ? 176 : 136) * scale * reduction
+  const height = (compactUi ? 59 : 51) * scale * reduction
+  return { width, height }
+}
+
+const INVENTORY_OBJECT_SLOTS = Array.from({ length: 4 }, (_, index) => ({ id: `object-slot-${index}`, index }))
 
 const EQUIPPED_ARTIFACT_SLOTS = [
   { id: 'artifact-slot-1', label: '1', index: 0 },
   { id: 'artifact-slot-2', label: '2', index: 1 }
 ]
 
-const ARTIFACT_SHOP_ITEMS: ArtifactType[] = TUTORIAL_ARTIFACT_TYPES
+const ARTIFACT_SHOP_ITEMS: ArtifactType[] = [...TUTORIAL_ARTIFACT_TYPES].sort((a, b) => ARTIFACT_PRICE_CRYSTALS[a] - ARTIFACT_PRICE_CRYSTALS[b])
 
 function artifactShortLabel(artifact: ArtifactType | undefined): string {
   if (!artifact) return 'EMPTY'
@@ -1044,13 +1301,13 @@ function artifactShortLabel(artifact: ArtifactType | undefined): string {
 }
 
 function artifactDescription(artifact: ArtifactType): string {
-  if (artifact === 'NO_COOLDOWN') return '5s without placement cooldown'
-  if (artifact === 'DOUBLE_PLACE') return '5s places a second matching block'
+  if (artifact === 'NO_COOLDOWN') return '10s without placement cooldown'
+  if (artifact === 'DOUBLE_PLACE') return '10s places a second matching block'
   if (artifact === 'TRIPLE_PLACE') return 'Places 3 pieces: cube, cylinder and pyramid'
   return 'Completes the current template instantly'
 }
 
-function countArtifacts(list: ArtifactType[], type: ArtifactType): number {
+function countArtifacts(list: Array<ArtifactType | undefined | null>, type: ArtifactType): number {
   return list.filter((item) => item === type).length
 }
 
@@ -1062,11 +1319,30 @@ function tutorialArtifactCount(type: ArtifactType): number {
   return tutorialArtifactInventoryCounts[type] ?? 0
 }
 
+function displayedArtifactCount(snap: ReturnType<typeof getClientSnapshot>, artifact: ArtifactType, tutorialActive: boolean): number {
+  if (tutorialActive) return tutorialArtifactCount(artifact) + countArtifacts(tutorialEquippedArtifacts, artifact)
+  return countArtifacts(snap.artifactInventory, artifact) + countArtifacts(snap.equippedArtifacts, artifact)
+}
+
+function artifactSlotLabel(artifact: ArtifactType | undefined, count: number): string {
+  if (!artifact) return 'EMPTY'
+  return `${artifactShortLabel(artifact)} x${Math.max(1, count)}`
+}
+
+function activateEquippedArtifactSlot(slotIndex: number, artifact: ArtifactType | undefined, tutorialCompleteVisible: boolean): void {
+  if (!artifact) {
+    openInventoryPanel()
+    return
+  }
+  if (tutorialCompleteVisible) useTutorialPracticeArtifact(slotIndex)
+  else requestUseArtifact(slotIndex)
+}
+
 function visibleInventoryArtifact(index: number, inventory: ArtifactType[]): ArtifactType | undefined {
   return TUTORIAL_ARTIFACT_TYPES[index]
 }
 
-function visibleEquippedArtifacts(snap: ReturnType<typeof getClientSnapshot>, tutorialCompleteVisible: boolean): ArtifactType[] {
+function visibleEquippedArtifacts(snap: ReturnType<typeof getClientSnapshot>, tutorialCompleteVisible: boolean): Array<ArtifactType | undefined> {
   return tutorialCompleteVisible ? tutorialEquippedArtifacts : snap.equippedArtifacts
 }
 
@@ -1081,16 +1357,12 @@ function bitCount(mask: number): number {
 }
 
 function tutorialPracticeMessage(): string {
-  if (tutorialPracticeGuideStep === 0) return 'Practice: first tap/click a matching floating slot for full points. Manual placement gives the best score.'
-  if (tutorialPracticeGuideStep === 1) return 'Practice: now press F. F auto-places the selected piece, easier on mobile but worth fewer points.'
-  if (tutorialPracticeGuideStep === 2) return 'Practice: use artifact slot 1. Tap it on screen or press 1 to activate the equipped artifact.'
-  if (tutorialPracticeGuideStep === 3) return 'Practice: use artifact slot 2. Artifacts are consumed when used, so choose the right moment in real rounds.'
-  return 'Practice complete. Keep testing E, F, piece buttons and artifacts, or press READY to enter the game queue.'
+  return PRACTICE_HINTS[Math.floor(floatTime / 5) % PRACTICE_HINTS.length]
 }
 
 function phaseLabel(phase: RoundPhase, snap: ReturnType<typeof getClientSnapshot>): string {
   switch (phase) {
-    case 'BUILD':          return `BUILD THE ${snap.templateId} ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â ${snap.secondsLeft}s`
+    case 'BUILD':          return `BUILD THE ${snap.templateId} - ${snap.secondsLeft}s`
     case 'BUILD_COMPLETE': return snap.performanceType === 'PERFECT' ? PERFORMANCE_LABEL.PERFECT : PERFORMANCE_LABEL.FAIL
     case 'COUNTDOWN':      return `GET READY... ${snap.secondsLeft}`
     case 'PERFORM':        return snap.performanceType === 'PERFECT' ? PERFORMANCE_LABEL.PERFECT : PERFORMANCE_LABEL.FAIL
@@ -1139,17 +1411,14 @@ function applyHudRenderer(): void {
       ? !inCinematic && phase !== 'BUILD_COMPLETE'
       : !inCinematic
     const dailyTutorialNeeded = isSpectator && needsDailyTutorial()
-    const participationLabel = isSpectator ? 'JOIN GAME' : isQueued ? 'LEAVE QUEUE' : 'LEAVE GAME'
     const roster = snap.players
     const rosterHeaderHeight = compactUi ? 68 : 52
     const rosterRowHeight = compactUi ? 48 : 30
     const rosterHeight = rosterHeaderHeight + Math.max(1, roster.length) * rosterRowHeight
     const cinematicBarWidth = compactUi ? 1400 : 1200
     const levelProgress = getLevelProgress(snap.totalXp)
-    const profileProgressionLabel = `LEVEL: ${levelProgress.level}   |   CRYSTALS: ${snap.crystals}`
     const excellence = snap.roundsPlayed > 0 ? Math.round(snap.totalXp / snap.roundsPlayed) : 0
     const dominance = snap.roundsPlayed > 0 ? Math.round((snap.mvpAwards / snap.roundsPlayed) * 100) : 0
-    const crystalsLabel = `CRYSTALS: ${snap.crystals}`
     const scraperTitle = getScraperTitle(snap.level)
     const persistentRows = rankingTab === 'DAILY'
       ? snap.leaderboards.daily
@@ -1175,20 +1444,27 @@ function applyHudRenderer(): void {
     const communityLabel = communityTierUpTimer > 0
       ? `COMMUNITY PROGRESS   |   SCRAPYARD TIER: ${snap.communityTier} REACHED!`
       : `COMMUNITY PROGRESS   |   SCRAPYARD TIER: ${snap.communityTier}   |   PTS: ${snap.communityPoints} / ${communityRequired}`
+    const reward = communityTierReward(snap.communityTier)
+    const roundTopRows = [...roster]
+      .sort((a, b) => b.roundPoints - a.roundPoints || b.correctPieces - a.correctPieces || a.name.localeCompare(b.name))
+      .slice(0, 5)
     const tutorialSlide = TUTORIAL_SLIDES[tutorialStep]
     const selectedPart = PART_TYPES[selectedIndex]
     const guideStep = currentTutorialGuideStep()
     const tutorialCompleteVisible = tutorialGuideActive && guideStep?.action === 'COMPLETE'
-    const tutorialReadyAvailable = !tutorialCompleteVisible || tutorialPracticeGuideStep >= 4
-    const displayedEquippedArtifacts = visibleEquippedArtifacts(snap, tutorialCompleteVisible)
+    const tutorialImage = tutorialGuideImage(guideStep, compactUi)
+    const tutorialImageVisible = tutorialGuideActive && tutorialImage !== null && !(guideStep?.action === 'PIECE' && tutorialPieceKeyPresses > 0) && !(guideStep?.action === 'F' && tutorialFKeyPresses > 0) && !(guideStep?.action === 'PIECE_BUTTONS' && tutorialPieceButtonPresses > 0) && !tutorialCompleteVisible && !tutorialVisible && !inCinematic
+    const tutorialReadyAvailable = true
+    const tutorialSkipAvailable = tutorialGuideActive && tutorialGuideSkipAllowed && !tutorialCompleteVisible
+    const displayedEquippedArtifacts = visibleEquippedArtifacts(snap, tutorialGuideActive)
     const displayedPartsAttached = tutorialCompleteVisible ? bitCount(tutorialPracticePlacedMask) : snap.partsAttached
     const displayedPartsRequired = tutorialCompleteVisible ? TUTORIAL_PRACTICE_SLOTS.length : snap.partsRequired
     const tutorialTipVisible = (tutorialGuideActive || tutorialModeActive || dailyTutorialNeeded) && !tutorialCompleteVisible && !tutorialVisible && !inCinematic
-    const guideAdvanceAvailable = guideStep !== null && (guideStep.action === 'NEXT' || guideStep.action === 'ARTIFACT_REVIEW' || (guideStep.action === 'PIECE' && tutorialPieceKeyChanged) || (guideStep.action === 'PIECE_BUTTONS' && tutorialPieceButtonChanged))
+    const guideAdvanceAvailable = guideStep !== null && (guideStep.action === 'NEXT' || guideStep.action === 'ARTIFACT_REVIEW' || (guideStep.action === 'PIECE' && tutorialPieceKeyChanged) || (guideStep.action === 'F' && tutorialFKeyPressed) || (guideStep.action === 'PIECE_BUTTONS' && tutorialPieceButtonChanged))
     const tutorialTip = tutorialGuideActive && guideStep !== null
       ? guideStep.message
       : dailyTutorialNeeded
-      ? 'Tutorial: talk to the guide avatar to learn the game and unlock JOIN GAME. Press F to skip.'
+      ? 'Tutorial: start the tutorial to learn the game before joining.'
       : isSpectator
       ? 'Tutorial: you are spectating. Press JOIN GAME when you want to enter the next round.'
       : isQueued
@@ -1205,9 +1481,15 @@ function applyHudRenderer(): void {
     const sidePanelWidth = compactUi ? 560 : 380
     const sidePanelRight = compactUi ? 18 : 48
     const expandedPanelRight = compactUi ? 700 : 48
+    const fixedSummaryTop = compactUi ? 18 : 58
+    const panelControlsTop = compactUi ? 162 : 148
+    const activePlayersButtonTop = compactUi ? 226 : 210
+    const expandedPanelTop = compactUi ? 76 : 210
+    const tutorialMenuFocusVisible = tutorialGuideActive && (guideStep?.action === 'PROFILE' || guideStep?.action === 'RANKING' || guideStep?.action === 'INVENTORY')
     const rosterWidth = compactUi ? 430 : 300
     const artifactPanelOpen = inventoryPanelOpen || shopPanelOpen
     const inventoryArtifactCount = (artifact: ArtifactType): number => tutorialGuideActive ? tutorialArtifactCount(artifact) : countArtifacts(snap.artifactInventory, artifact)
+    const canStoreArtifact = (artifact: ArtifactType): boolean => snap.artifactInventory.includes(artifact) || new Set(snap.artifactInventory).size < 9
 
     return (
       <UiEntity uiTransform={{ width: '100%', height: '100%', positionType: 'absolute', position: { top: 0, left: 0 } }}>
@@ -1223,11 +1505,7 @@ function applyHudRenderer(): void {
             justifyContent: 'center',
             display: syncing || isPlaying ? 'flex' : 'none'
           }}
-          uiBackground={{
-            color: syncing
-              ? { r: 0.25, g: 0.15, b: 0.05, a: 0.92 }
-              : { r: 0.05, g: 0.05, b: 0.18, a: 0.92 }
-          }}
+          uiBackground={uiVariant('top_phase_bar', compactUi)}
         >
           <Label
             value={label}
@@ -1243,19 +1521,30 @@ function applyHudRenderer(): void {
           />
         </UiEntity>
 
+        {/* Tutorial menu focus shade */}
+        <UiEntity
+          uiTransform={{
+            positionType: 'absolute',
+            position: { top: 0, left: 0 },
+            width: '100%',
+            height: '100%',
+            display: tutorialMenuFocusVisible ? 'flex' : 'none'
+          }}
+          uiBackground={{ color: { r: 0, g: 0, b: 0, a: 0.58 } }}
+        />
         {/* Player summary */}
         <UiEntity
           uiTransform={{
             positionType: 'absolute',
-            position: { top: compactUi ? 158 : 58, right: sidePanelRight },
+            position: { top: fixedSummaryTop, right: sidePanelRight },
             width: sidePanelWidth,
-            height: compactUi ? 144 : 90,
+            height: compactUi ? 112 : 76,
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
             display: !syncing && snap.profileLoaded && showInformationPanels ? 'flex' : 'none'
           }}
-          uiBackground={{ color: { r: 0.02, g: 0.12, b: 0.16, a: 0.94 } }}
+          uiBackground={uiVariant('player_summary_fixed', compactUi)}
         >
           <Label
             value={snap.playerName}
@@ -1264,27 +1553,29 @@ function applyHudRenderer(): void {
             uiTransform={{ width: '100%', height: compactUi ? 48 : 30 }}
             textAlign='middle-center'
           />
-          <Label
-            value={scraperTitle}
-            fontSize={font(18)}
-            color={{ r: 0.2, g: 1, b: 0.9, a: 1 }}
-            uiTransform={{ width: '100%', height: compactUi ? 42 : 26 }}
-            textAlign='middle-center'
-          />
-          <Label
-            value={profileProgressionLabel}
-            fontSize={font(18)}
-            color={{ r: 1, g: 0.84, b: 0.25, a: 1 }}
-            uiTransform={{ width: '100%', height: compactUi ? 42 : 26 }}
-            textAlign='middle-center'
-          />
+          <UiEntity uiTransform={{ width: '100%', height: compactUi ? 42 : 26, flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
+            <Label
+              value={`LEVEL: ${levelProgress.level}`}
+              fontSize={font(18)}
+              color={{ r: 1, g: 0.84, b: 0.25, a: 1 }}
+              uiTransform={{ width: '47%', height: '100%' }}
+              textAlign='middle-center'
+            />
+            <Label
+              value={`CRYSTALS: ${snap.crystals}`}
+              fontSize={font(18)}
+              color={{ r: 1, g: 0.84, b: 0.25, a: 1 }}
+              uiTransform={{ width: '40%', height: '100%' }}
+              textAlign='middle-right'
+            />
+          </UiEntity>
         </UiEntity>
 
-        {/* Panel controls */}
+        {/* Inventory shortcut */}
         <UiEntity
           uiTransform={{
             positionType: 'absolute',
-            position: { top: compactUi ? 302 : 148, right: sidePanelRight },
+            position: { top: panelControlsTop, right: sidePanelRight },
             width: sidePanelWidth,
             height: compactUi ? 64 : 46,
             flexDirection: 'row',
@@ -1292,58 +1583,25 @@ function applyHudRenderer(): void {
           }}
         >
           <UiEntity
-            uiTransform={{ width: '33.33%', height: '100%', alignItems: 'center', justifyContent: 'center' }}
-            uiBackground={{ color: profilePanelOpen
-              ? { r: 0.05, g: 0.52, b: 0.44, a: 1 }
-              : { r: 0.025, g: 0.2, b: 0.25, a: 0.96 }
-            }}
-            onMouseDown={() => {
-              if (!allowTutorialAction('PROFILE')) return
-              profilePanelOpen = !profilePanelOpen
-              if (profilePanelOpen) completeTutorialGuideAction('PROFILE')
-              rankingPanelOpen = false
-              inventoryPanelOpen = false
-              activePlayersPanelOpen = false
-            }}
-          >
-            <Label value='PROFILE' fontSize={font(14)} color={{ r: 1, g: 1, b: 1, a: 1 }} uiTransform={{ width: '100%', height: '100%' }} textAlign='middle-center' />
-          </UiEntity>
-          <UiEntity
-            uiTransform={{ width: '33.33%', height: '100%', alignItems: 'center', justifyContent: 'center' }}
-            uiBackground={{ color: rankingPanelOpen
-              ? { r: 0.05, g: 0.52, b: 0.44, a: 1 }
-              : { r: 0.025, g: 0.2, b: 0.25, a: 0.96 }
-            }}
-            onMouseDown={() => {
-              if (!allowTutorialAction('RANKING')) return
-              rankingPanelOpen = !rankingPanelOpen
-              profilePanelOpen = false
-              inventoryPanelOpen = false
-              activePlayersPanelOpen = false
-              if (rankingPanelOpen) {
-                requestLeaderboards()
-                completeTutorialGuideAction('RANKING')
-              }
-            }}
-          >
-            <Label value='RANKING' fontSize={font(14)} color={{ r: 1, g: 1, b: 1, a: 1 }} uiTransform={{ width: '100%', height: '100%' }} textAlign='middle-center' />
-          </UiEntity>
-          <UiEntity
-            uiTransform={{ width: '33.34%', height: '100%', alignItems: 'center', justifyContent: 'center' }}
+            uiTransform={{ width: '100%', height: '100%', alignItems: 'center', justifyContent: 'center' }}
             uiBackground={{ color: inventoryPanelOpen
               ? { r: 0.05, g: 0.52, b: 0.44, a: 1 }
               : { r: 0.025, g: 0.2, b: 0.25, a: 0.96 }
             }}
             onMouseDown={() => {
               if (!allowTutorialAction('INVENTORY')) return
+              clickFlash('tab-inventory')
               inventoryPanelOpen = !inventoryPanelOpen
               if (inventoryPanelOpen) completeTutorialGuideAction('INVENTORY')
               profilePanelOpen = false
               rankingPanelOpen = false
+              activePlayersPanelOpen = false
               shopPanelOpen = false
+              communityPanelOpen = false
             }}
           >
-            <Label value='INVENTORY' fontSize={font(13)} color={{ r: 1, g: 1, b: 1, a: 1 }} uiTransform={{ width: '100%', height: '100%' }} textAlign='middle-center' />
+            <Label value='INVENTORY' fontSize={font(15)} color={{ r: 1, g: 1, b: 1, a: 1 }} uiTransform={{ width: '100%', height: '100%' }} textAlign='middle-center' />
+            {clickFlashOverlay('tab-inventory')}
           </UiEntity>
         </UiEntity>
 
@@ -1351,11 +1609,11 @@ function applyHudRenderer(): void {
         <UiEntity
           uiTransform={{
             positionType: 'absolute',
-            position: { top: compactUi ? 382 : 210, right: sidePanelRight },
+            position: { top: activePlayersButtonTop, right: sidePanelRight },
             width: rosterWidth,
             height: rosterHeight,
             flexDirection: 'column',
-            display: !syncing && showInformationPanels && !compactUi ? 'flex' : 'none'
+            display: 'none'
           }}
           uiBackground={{ color: { r: 0.02, g: 0.03, b: 0.09, a: 0.9 } }}
         >
@@ -1407,12 +1665,12 @@ function applyHudRenderer(): void {
         <UiEntity
           uiTransform={{
             positionType: 'absolute',
-            position: { top: compactUi ? 382 : 210, right: sidePanelRight },
+            position: { top: activePlayersButtonTop, right: sidePanelRight },
             width: sidePanelWidth,
             height: compactUi ? 64 : 46,
             alignItems: 'center',
             justifyContent: 'center',
-            display: !syncing && showInformationPanels && compactUi ? 'flex' : 'none'
+            display: 'none'
           }}
           uiBackground={{ color: activePlayersPanelOpen
             ? { r: 0.05, g: 0.52, b: 0.44, a: 1 }
@@ -1420,6 +1678,7 @@ function applyHudRenderer(): void {
           }}
           onMouseDown={() => {
             if (tutorialGuideActive) return
+            clickFlash('active-players-mobile')
             activePlayersPanelOpen = !activePlayersPanelOpen
             profilePanelOpen = false
             rankingPanelOpen = false
@@ -1433,16 +1692,17 @@ function applyHudRenderer(): void {
             uiTransform={{ width: '100%', height: '100%' }}
             textAlign='middle-center'
           />
+          {clickFlashOverlay('active-players-mobile')}
         </UiEntity>
         {/* Profile / ranking panel */}
         <UiEntity
           uiTransform={{
             positionType: 'absolute',
-            position: { top: compactUi ? (activePlayersPanelOpen ? 300 : 382) : 210, right: expandedPanelRight },
+            position: { top: expandedPanelTop, right: expandedPanelRight },
             width: compactUi ? 816 : 680,
-            height: activePlayersPanelOpen ? (compactUi ? 520 : 420) : artifactPanelOpen ? (compactUi ? 640 : 500) : profilePanelOpen ? (compactUi ? 500 : 390) : (compactUi ? 700 : 720),
+            height: activePlayersPanelOpen ? (compactUi ? 520 : 420) : artifactPanelOpen ? (compactUi ? 640 : 500) : profilePanelOpen ? (compactUi ? 500 : 390) : communityPanelOpen ? (compactUi ? 520 : 420) : (compactUi ? 700 : 720),
             flexDirection: 'column',
-            display: (profilePanelOpen || rankingPanelOpen || inventoryPanelOpen || activePlayersPanelOpen || shopPanelOpen) && !syncing && snap.profileLoaded && showInformationPanels ? 'flex' : 'none'
+            display: (profilePanelOpen || rankingPanelOpen || inventoryPanelOpen || activePlayersPanelOpen || shopPanelOpen || communityPanelOpen) && !syncing && snap.profileLoaded && showInformationPanels ? 'flex' : 'none'
           }}
           uiBackground={{ color: { r: 0.015, g: 0.025, b: 0.075, a: 0.98 } }}
         >
@@ -1452,14 +1712,14 @@ function applyHudRenderer(): void {
           >
             <UiEntity uiTransform={{ width: compactUi ? 696 : 580, height: '100%', flexDirection: 'column', justifyContent: 'center' }}>
               <Label
-                value={rankingPanelOpen ? 'RANKINGS' : shopPanelOpen ? 'ARTIFACT SHOP' : inventoryPanelOpen ? 'INVENTORY' : activePlayersPanelOpen ? 'ACTIVE PLAYERS' : snap.playerName}
+                value={rankingPanelOpen ? 'RANKINGS' : shopPanelOpen ? 'ARTIFACT SHOP' : inventoryPanelOpen ? 'INVENTORY' : activePlayersPanelOpen ? 'ACTIVE PLAYERS' : communityPanelOpen ? 'COMMUNITY' : snap.playerName}
                 fontSize={font(33)}
                 color={{ r: 1, g: 1, b: 1, a: 1 }}
                 uiTransform={{ width: '100%', height: compactUi ? 62 : 48 }}
                 textAlign='middle-left'
               />
               <Label
-                value={rankingPanelOpen ? 'SESSION   |   DAILY   |   WEEKLY   |   TOTAL' : shopPanelOpen ? `CRYSTALS: ${snap.crystals}   |   PRICE: ${ARTIFACT_PRICE_CRYSTALS}` : inventoryPanelOpen ? `CRYSTALS: ${snap.crystals}   |   SCRAP PARTS` : activePlayersPanelOpen ? `PLAYERS IN ROUND: ${roster.length}` : `${scraperTitle}   |   LEVEL: ${snap.level}`}
+                value={rankingPanelOpen ? 'SESSION   |   DAILY   |   WEEKLY   |   TOTAL' : shopPanelOpen ? `CRYSTALS: ${snap.crystals}   |   ARTIFACT PRICES` : inventoryPanelOpen ? `CRYSTALS: ${snap.crystals}   |   SCRAP PARTS` : activePlayersPanelOpen ? `PLAYERS IN ROUND: ${roster.length}` : communityPanelOpen ? `TIER ${snap.communityTier}   |   ${snap.communityPoints} / ${communityRequired} PTS` : `${scraperTitle}   |   LEVEL: ${snap.level}`}
                 fontSize={font(20)}
                 color={{ r: 0.2, g: 1, b: 0.9, a: 1 }}
                 uiTransform={{ width: '100%', height: compactUi ? 45 : 32 }}
@@ -1469,9 +1729,13 @@ function applyHudRenderer(): void {
             <UiEntity
               uiTransform={{ width: compactUi ? 120 : 80, height: compactUi ? 100 : 72, alignItems: 'center', justifyContent: 'center' }}
               uiBackground={{ color: { r: 0.35, g: 0.08, b: 0.12, a: 1 } }}
-              onMouseDown={closeGameUi}
+              onMouseDown={() => {
+                clickFlash('panel-close')
+                closeGameUi()
+              }}
             >
               <Label value='X' fontSize={font(20)} color={{ r: 1, g: 1, b: 1, a: 1 }} uiTransform={{ width: '100%', height: '100%' }} textAlign='middle-center' />
+              {clickFlashOverlay('panel-close')}
             </UiEntity>
           </UiEntity>
 
@@ -1510,6 +1774,43 @@ function applyHudRenderer(): void {
               </UiEntity>
             ))}
           </UiEntity>
+          <UiEntity uiTransform={{ width: '100%', height: compactUi ? 330 : 250, flexDirection: 'column', display: communityPanelOpen ? 'flex' : 'none' }}>
+            <Label
+              value={`CURRENT BONUS: +${reward.crystalBonus} CRYSTALS   |   +${reward.pointBonus} PTS`}
+              fontSize={font(22)}
+              color={{ r: 1, g: 0.84, b: 0.25, a: 1 }}
+              uiTransform={{ width: '100%', height: compactUi ? 76 : 52 }}
+              textAlign='middle-center'
+            />
+            <UiEntity
+              uiTransform={{ width: '92%', height: compactUi ? 32 : 22, margin: { left: '4%' } }}
+              uiBackground={uiVariant('progress_bar_bg', compactUi)}
+            >
+              <UiEntity
+                uiTransform={{ width: `${communityPct}%`, height: '100%' }}
+                uiBackground={uiVariant('community_fill', compactUi)}
+              />
+            </UiEntity>
+            <UiEntity uiTransform={{ width: '100%', height: compactUi ? 64 : 46, flexDirection: 'row', alignItems: 'center', margin: { top: compactUi ? 24 : 16 } }}>
+              <Label value='TIER' fontSize={font(18)} color={{ r: 0.35, g: 0.9, b: 1, a: 1 }} uiTransform={{ width: '24%', height: '100%' }} textAlign='middle-center' />
+              <Label value='CRYSTALS' fontSize={font(18)} color={{ r: 0.35, g: 0.9, b: 1, a: 1 }} uiTransform={{ width: '38%', height: '100%' }} textAlign='middle-center' />
+              <Label value='POINTS' fontSize={font(18)} color={{ r: 0.35, g: 0.9, b: 1, a: 1 }} uiTransform={{ width: '38%', height: '100%' }} textAlign='middle-center' />
+            </UiEntity>
+            {[1, 2, 3, 4, 5, 6].map((tier) => {
+              const tierReward = communityTierReward(tier)
+              return (
+                <UiEntity
+                  key={`community-tier-${tier}`}
+                  uiTransform={{ width: '100%', height: compactUi ? 46 : 30, flexDirection: 'row', alignItems: 'center' }}
+                  uiBackground={{ color: tier === snap.communityTier ? { r: 0.16, g: 0.13, b: 0.03, a: 0.85 } : { r: 0.035, g: 0.045, b: 0.11, a: tier % 2 === 0 ? 0.65 : 0.35 } }}
+                >
+                  <Label value={`${tier}+`} fontSize={font(17)} color={{ r: 0.92, g: 0.96, b: 1, a: 1 }} uiTransform={{ width: '24%', height: '100%' }} textAlign='middle-center' />
+                  <Label value={`+${tierReward.crystalBonus}`} fontSize={font(17)} color={{ r: 0.2, g: 1, b: 0.85, a: 1 }} uiTransform={{ width: '38%', height: '100%' }} textAlign='middle-center' />
+                  <Label value={`+${tierReward.pointBonus}`} fontSize={font(17)} color={{ r: 1, g: 0.84, b: 0.25, a: 1 }} uiTransform={{ width: '38%', height: '100%' }} textAlign='middle-center' />
+                </UiEntity>
+              )
+            })}
+          </UiEntity>
           <UiEntity uiTransform={{ width: '100%', height: compactUi ? 66 : 48, flexDirection: 'row', alignItems: 'center', display: profilePanelOpen ? 'flex' : 'none' }}>
             <Label value={`TOTAL PTS: ${snap.totalXp}`} fontSize={font(20)} color={{ r: 1, g: 0.84, b: 0.25, a: 1 }} uiTransform={{ width: '30%', height: '100%' }} textAlign='middle-center' />
             <Label value={`LEVEL: ${levelProgress.level}`} fontSize={font(20)} color={{ r: 1, g: 0.84, b: 0.25, a: 1 }} uiTransform={{ width: '20%', height: '100%' }} textAlign='middle-center' />
@@ -1544,7 +1845,7 @@ function applyHudRenderer(): void {
             </UiEntity>
           </UiEntity>
 
-          <UiEntity uiTransform={{ width: '100%', height: compactUi ? 420 : 310, flexDirection: 'column', display: inventoryPanelOpen ? 'flex' : 'none' }}>
+          <UiEntity uiTransform={{ width: '100%', height: compactUi ? 500 : 380, flexDirection: 'column', display: inventoryPanelOpen ? 'flex' : 'none' }}>
             <UiEntity uiTransform={{ width: '100%', height: compactUi ? 54 : 40, flexDirection: 'row' }}>
               <Label value={`CRYSTALS: ${snap.crystals}`} fontSize={font(24)} color={{ r: 1, g: 0.84, b: 0.25, a: 1 }} uiTransform={{ width: '38%', height: '100%' }} textAlign='middle-center' />
               <Label value={`CUBES: ${snap.cubeScrap}`} fontSize={font(17)} color={{ r: 0.22, g: 0.52, b: 1, a: 1 }} uiTransform={{ width: '20%', height: '100%' }} textAlign='middle-center' />
@@ -1552,54 +1853,92 @@ function applyHudRenderer(): void {
               <Label value={`PYR: ${snap.coneScrap}`} fontSize={font(17)} color={{ r: 1, g: 0.84, b: 0.15, a: 1 }} uiTransform={{ width: '22%', height: '100%' }} textAlign='middle-center' />
             </UiEntity>
 
-            <Label value='OBJECTS' fontSize={font(16)} color={{ r: 0.35, g: 0.95, b: 1, a: 1 }} uiTransform={{ width: '100%', height: compactUi ? 34 : 24 }} textAlign='middle-center' />
-            <UiEntity uiTransform={{ width: '100%', height: compactUi ? 176 : 132, flexDirection: 'column' }}>
-              {[0, 1, 2].map((row) => (
-                <UiEntity key={`inventory-row-${row}`} uiTransform={{ width: '100%', height: '33%', flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
-                  {INVENTORY_OBJECT_SLOTS.slice(row * 3, row * 3 + 3).map((slot) => {
-                    const candidate = visibleInventoryArtifact(slot.index, snap.artifactInventory)
-                    const count = candidate ? inventoryArtifactCount(candidate) : 0
-                    const artifact = candidate && count > 0 ? candidate : undefined
-                    return (
+            <Label value='OBJECTS' fontSize={font(18)} color={{ r: 0.35, g: 0.95, b: 1, a: 1 }} uiTransform={{ width: '100%', height: compactUi ? 40 : 28 }} textAlign='middle-center' />
+            <UiEntity uiTransform={{ width: '100%', height: compactUi ? 260 : 190, flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
+              {INVENTORY_OBJECT_SLOTS.map((slot) => {
+                const candidate = visibleInventoryArtifact(slot.index, snap.artifactInventory)
+                const count = candidate ? inventoryArtifactCount(candidate) : 0
+                const artifact = candidate && count > 0 ? candidate : undefined
+                const imageSize = artifact ? inventoryArtifactImageSize(artifact, compactUi) : undefined
+                return (
+                  <UiEntity
+                    key={`inventory-object-${slot.id}`}
+                    uiTransform={{ width: compactUi ? 188 : 146, height: compactUi ? 210 : 150, margin: { left: compactUi ? 6 : 8, right: compactUi ? 6 : 8, top: 4, bottom: 4 }, flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}
+                    uiBackground={uiVariant(artifact ? 'inventory_object_slot_filled' : 'inventory_object_slot_empty', compactUi)}
+                    onMouseDown={() => {
+                      clickFlash(`inventory-object-${slot.index}`)
+                      if (!artifact) return
+                      if (tutorialGuideActive) {
+                        const action = currentTutorialAction()
+                        if (action !== 'ARTIFACT_1' && action !== 'ARTIFACT_2') return
+                        if (tutorialEquippedArtifacts.length >= 2) return
+                        tutorialArtifactInventoryCounts[artifact] = Math.max(0, tutorialArtifactCount(artifact) - 1)
+                        tutorialEquippedArtifacts.push(artifact)
+                        completeTutorialGuideAction(action)
+                        return
+                      }
+                      const inventoryIndex = firstArtifactIndex(snap.artifactInventory, artifact)
+                      if (inventoryIndex >= 0) requestEquipArtifact(inventoryIndex)
+                    }}
+                  >
+                    {artifact ? (
                       <UiEntity
-                        key={`inventory-object-${slot.id}`}
-                        uiTransform={{ width: compactUi ? 150 : 102, height: compactUi ? 50 : 38, margin: { left: 5, right: 5, top: 3, bottom: 3 }, flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}
-                        uiBackground={{ color: artifact ? { r: 0.04, g: 0.24, b: 0.28, a: 0.96 } : { r: 0.025, g: 0.045, b: 0.08, a: 0.72 } }}
-                        onMouseDown={() => {
-                          if (!artifact) return
-                          if (tutorialGuideActive) {
-                            const action = currentTutorialAction()
-                            if (action !== 'ARTIFACT_1' && action !== 'ARTIFACT_2') return
-                            if (tutorialEquippedArtifacts.length >= 2) return
-                            tutorialArtifactInventoryCounts[artifact] = Math.max(0, tutorialArtifactCount(artifact) - 1)
-                            tutorialEquippedArtifacts.push(artifact)
-                            completeTutorialGuideAction(action)
-                            return
-                          }
-                          const inventoryIndex = firstArtifactIndex(snap.artifactInventory, artifact)
-                          if (inventoryIndex >= 0) requestEquipArtifact(inventoryIndex)
+                        uiTransform={{
+                          positionType: 'absolute',
+                          width: imageSize?.width ?? 0,
+                          height: imageSize?.height ?? 0
                         }}
-                      >
-                        <Label value={artifact ? `${artifactShortLabel(artifact)} x${count}` : 'EMPTY'} fontSize={font(11)} color={{ r: 0.75, g: 0.95, b: 1, a: 1 }} uiTransform={{ width: '100%', height: '100%' }} textAlign='middle-center' />
-                      </UiEntity>
-                    )
-                  })}
-                </UiEntity>
-              ))}
+                        uiBackground={artifactThumbnail(artifact, compactUi)}
+                      />
+                    ) : (
+                      <Label value='EMPTY' fontSize={font(15)} color={{ r: 0.45, g: 0.55, b: 0.65, a: 1 }} uiTransform={{ width: '100%', height: '100%' }} textAlign='middle-center' />
+                    )}
+                    {artifact ? (
+                      <Label
+                        value={`x${count}`}
+                        fontSize={font(18)}
+                        color={{ r: 1, g: 0.88, b: 0.25, a: 1 }}
+                        uiTransform={{ positionType: 'absolute', position: { right: 10, bottom: 8 }, width: compactUi ? 70 : 46, height: compactUi ? 34 : 24 }}
+                        textAlign='middle-right'
+                      />
+                    ) : null}
+                    {clickFlashOverlay(`inventory-object-${slot.index}`)}
+                  </UiEntity>
+                )
+              })}
             </UiEntity>
 
             <UiEntity uiTransform={{ width: '100%', height: compactUi ? 112 : 82, flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
               <Label value='EQUIPPED' fontSize={font(16)} color={{ r: 0.35, g: 0.95, b: 1, a: 1 }} uiTransform={{ width: '28%', height: '100%' }} textAlign='middle-center' />
-              {EQUIPPED_ARTIFACT_SLOTS.map((slot) => (
-                <UiEntity
-                  key={`inventory-equipped-${slot.id}`}
-                  uiTransform={{ width: compactUi ? 150 : 102, height: compactUi ? 82 : 58, margin: { left: 8, right: 8 }, flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}
-                  uiBackground={{ color: displayedEquippedArtifacts[slot.index] ? { r: 0.04, g: 0.24, b: 0.28, a: 0.96 } : { r: 0.025, g: 0.06, b: 0.1, a: 0.95 } }}
-                >
-                  <Label value={slot.label} fontSize={font(17)} color={{ r: 0.2, g: 1, b: 0.9, a: 1 }} uiTransform={{ width: '100%', height: '42%' }} textAlign='middle-center' />
-                  <Label value={artifactShortLabel(displayedEquippedArtifacts[slot.index])} fontSize={font(11)} color={{ r: 0.65, g: 0.75, b: 0.85, a: 1 }} uiTransform={{ width: '100%', height: '58%' }} textAlign='middle-center' />
-                </UiEntity>
-              ))}
+              {EQUIPPED_ARTIFACT_SLOTS.map((slot) => {
+                const artifact = displayedEquippedArtifacts[slot.index]
+                const artifactCount = artifact ? displayedArtifactCount(snap, artifact, tutorialGuideActive) : 0
+                return (
+                  <UiEntity
+                    key={`inventory-equipped-${slot.id}`}
+                    uiTransform={{ width: compactUi ? 150 : 102, height: compactUi ? 82 : 58, margin: { left: 8, right: 8 }, flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}
+                    uiBackground={uiVariant('equipped_artifact_slot', compactUi)}
+                    onMouseDown={() => {
+                      clickFlash(`inventory-equipped-${slot.index}`)
+                      if (!artifact) openInventoryPanel()
+                    }}
+                  >
+                    <Label value={slot.label} fontSize={font(15)} color={{ r: 0.2, g: 1, b: 0.9, a: 1 }} uiTransform={{ positionType: 'absolute', position: { top: 2, left: 0 }, width: '100%', height: compactUi ? 24 : 18 }} textAlign='middle-center' />
+                    {artifact ? (
+                      <UiEntity
+                        uiTransform={{ positionType: 'absolute', width: compactUi ? 136 : 92, height: compactUi ? 46 : 35 }}
+                        uiBackground={artifactThumbnail(artifact, compactUi)}
+                      />
+                    ) : (
+                      <Label value='EMPTY' fontSize={font(10)} color={{ r: 0.5, g: 0.58, b: 0.68, a: 1 }} uiTransform={{ width: '100%', height: '100%' }} textAlign='middle-center' />
+                    )}
+                    {artifact ? (
+                      <Label value={`x${artifactCount}`} fontSize={font(11)} color={{ r: 1, g: 0.88, b: 0.25, a: 1 }} uiTransform={{ positionType: 'absolute', position: { right: 7, bottom: 3 }, width: compactUi ? 52 : 34, height: compactUi ? 22 : 16 }} textAlign='middle-right' />
+                    ) : null}
+                    {clickFlashOverlay(`inventory-equipped-${slot.index}`)}
+                  </UiEntity>
+                )
+              })}
             </UiEntity>
           </UiEntity>
 
@@ -1633,17 +1972,20 @@ function applyHudRenderer(): void {
                 />
                 <UiEntity
                   uiTransform={{ width: '24%', height: compactUi ? 72 : 54, alignItems: 'center', justifyContent: 'center' }}
-                  uiBackground={{ color: snap.crystals >= ARTIFACT_PRICE_CRYSTALS && snap.artifactInventory.length < 9 && !inBuild
+                  uiBackground={{ color: snap.crystals >= ARTIFACT_PRICE_CRYSTALS[artifact] && canStoreArtifact(artifact) && !inBuild
                     ? { r: 0.05, g: 0.52, b: 0.44, a: 1 }
                     : { r: 0.18, g: 0.18, b: 0.22, a: 0.86 }
                   }}
                   onMouseDown={() => {
                     if (tutorialGuideActive) return
                     if (inBuild) return
+                    if (!canStoreArtifact(artifact)) return
+                    clickFlash(`shop-${artifact}`)
                     requestBuyArtifact(artifact)
                   }}
                 >
-                  <Label value={`BUY ${ARTIFACT_PRICE_CRYSTALS}`} fontSize={font(16)} color={{ r: 1, g: 1, b: 1, a: 1 }} uiTransform={{ width: '100%', height: '100%' }} textAlign='middle-center' />
+                  <Label value={`BUY ${ARTIFACT_PRICE_CRYSTALS[artifact]}`} fontSize={font(16)} color={{ r: 1, g: 1, b: 1, a: 1 }} uiTransform={{ width: '100%', height: '100%' }} textAlign='middle-center' />
+                  {clickFlashOverlay(`shop-${artifact}`)}
                 </UiEntity>
               </UiEntity>
             ))}
@@ -1654,9 +1996,10 @@ function applyHudRenderer(): void {
               uiBackground={{ color: { r: 0.08, g: 0.26, b: 0.34, a: 1 } }}
               onMouseDown={() => {
                 if (tutorialGuideActive) return
+                clickFlash('profile-tutorial')
                 tutorialModeActive = true
                 tutorialFirstRoundActive = false
-                openTutorial(false)
+                startTutorialGuide(false, true)
               }}
             >
               <Label
@@ -1666,6 +2009,7 @@ function applyHudRenderer(): void {
                 uiTransform={{ width: '100%', height: '100%' }}
                 textAlign='middle-center'
               />
+              {clickFlashOverlay('profile-tutorial')}
             </UiEntity>
           </UiEntity>
 
@@ -1673,7 +2017,10 @@ function applyHudRenderer(): void {
             <UiEntity
               uiTransform={{ width: '15%', height: '100%', alignItems: 'center', justifyContent: 'center' }}
               uiBackground={{ color: { r: 0.04, g: 0.32, b: 0.31, a: 1 } }}
-              onMouseDown={() => { stepRankingTab(-1) }}
+              onMouseDown={() => {
+                clickFlash('ranking-prev')
+                stepRankingTab(-1)
+              }}
             >
               <Label
                 value={'<'}
@@ -1682,12 +2029,16 @@ function applyHudRenderer(): void {
                 uiTransform={{ width: '100%', height: '100%' }}
                 textAlign='middle-center'
               />
+              {clickFlashOverlay('ranking-prev')}
             </UiEntity>
             <Label value='LEADERBOARDS' fontSize={font(23)} color={{ r: 0.35, g: 0.9, b: 1, a: 1 }} uiTransform={{ width: '70%', height: '100%' }} textAlign='middle-center' />
             <UiEntity
               uiTransform={{ width: '15%', height: '100%', alignItems: 'center', justifyContent: 'center' }}
               uiBackground={{ color: { r: 0.04, g: 0.32, b: 0.31, a: 1 } }}
-              onMouseDown={() => { stepRankingTab(1) }}
+              onMouseDown={() => {
+                clickFlash('ranking-next')
+                stepRankingTab(1)
+              }}
             >
               <Label
                 value={'>'}
@@ -1696,6 +2047,7 @@ function applyHudRenderer(): void {
                 uiTransform={{ width: '100%', height: '100%' }}
                 textAlign='middle-center'
               />
+              {clickFlashOverlay('ranking-next')}
             </UiEntity>
           </UiEntity>
 
@@ -1709,11 +2061,13 @@ function applyHudRenderer(): void {
                   : { r: 0.04, g: 0.06, b: 0.14, a: 1 }
                 }}
                 onMouseDown={() => {
+                  clickFlash(`ranking-tab-${tab}`)
                   rankingTab = tab
                   if (tab !== 'SESSION' && snap.leaderboards.generatedAt === 0) requestLeaderboards()
                 }}
               >
                 <Label value={tab} fontSize={font(20)} color={{ r: 1, g: 1, b: 1, a: 1 }} uiTransform={{ width: '100%', height: '100%' }} textAlign='middle-center' />
+                {clickFlashOverlay(`ranking-tab-${tab}`)}
               </UiEntity>
             ))}
           </UiEntity>
@@ -1805,7 +2159,7 @@ function applyHudRenderer(): void {
             justifyContent: 'center',
             display: 'none'
           }}
-          uiBackground={{ color: { r: 0.02, g: 0.03, b: 0.12, a: 0.96 } }}
+          uiBackground={uiVariant('tutorial_ready_box', compactUi)}
         >
           <UiEntity
             uiTransform={{
@@ -1816,10 +2170,14 @@ function applyHudRenderer(): void {
               alignItems: 'center',
               justifyContent: 'center'
             }}
-            uiBackground={{ color: { r: 0.34, g: 0.07, b: 0.12, a: 1 } }}
-            onMouseDown={closeGameUi}
+            uiBackground={uiVariant('leaderboard_close_button', compactUi)}
+            onMouseDown={() => {
+              clickFlash('ready-close')
+              closeGameUi()
+            }}
           >
             <Label value='X' fontSize={font(20)} color={{ r: 1, g: 1, b: 1, a: 1 }} uiTransform={{ width: '100%', height: '100%' }} textAlign='middle-center' />
+            {clickFlashOverlay('ready-close')}
           </UiEntity>
           <Label
             value='ALIENSCRAPYARD'
@@ -1843,16 +2201,20 @@ function applyHudRenderer(): void {
               justifyContent: 'center',
               display: 'flex'
             }}
-            uiBackground={{ color: { r: 0.05, g: 0.55, b: 0.46, a: 1 } }}
-            onMouseDown={joinGame}
+            uiBackground={uiVariant('join_button', compactUi)}
+            onMouseDown={() => {
+              clickFlash('ready-join')
+              joinGame()
+            }}
           >
             <Label
-              value='JOIN GAME'
+              value='' 
               fontSize={font(20)}
               color={{ r: 1, g: 1, b: 1, a: 1 }}
               uiTransform={{ width: '100%', height: '100%' }}
               textAlign='middle-center'
             />
+            {clickFlashOverlay('ready-join')}
           </UiEntity>
         </UiEntity>
 
@@ -1867,7 +2229,7 @@ function applyHudRenderer(): void {
             height: compactUi ? 24 : 14,
             display: (inBuild || tutorialCompleteVisible) ? 'flex' : 'none'
           }}
-          uiBackground={{ color: { r: 0.1, g: 0.1, b: 0.1, a: 0.7 } }}
+          uiBackground={uiVariant('progress_bar_bg', compactUi)}
         >
           <UiEntity
             uiTransform={{ width: `${pct}%`, height: compactUi ? 24 : 14 }}
@@ -1881,7 +2243,7 @@ function applyHudRenderer(): void {
             positionType: 'absolute',
             position: { top: compactUi ? 124 : 78, left: compactUi ? 400 : 576 },
             width: compactUi ? 920 : 768,
-            height: compactUi ? 36 : 20,
+            height: compactUi ? 54 : 34,
             alignItems: 'center',
             justifyContent: 'center',
             display: (inBuild || tutorialCompleteVisible) ? 'flex' : 'none'
@@ -1889,14 +2251,79 @@ function applyHudRenderer(): void {
         >
           <Label
             value={`PIECES: ${displayedPartsAttached} / ${displayedPartsRequired}`}
-            fontSize={font(12)}
+            fontSize={font(compactUi ? 28 : 22)}
             color={{ r: 0.85, g: 0.85, b: 1, a: 1 }}
             uiTransform={{ width: '100%', height: '100%' }}
             textAlign='middle-center'
           />
         </UiEntity>
 
+        {/* Tutorial image focus shade */}
+        <UiEntity
+          uiTransform={{
+            positionType: 'absolute',
+            position: { top: 0, left: 0 },
+            width: '100%',
+            height: '100%',
+            display: tutorialImageVisible ? 'flex' : 'none'
+          }}
+          uiBackground={{ color: { r: 0, g: 0, b: 0, a: 0.58 } }}
+        />
+        <UiEntity
+          uiTransform={{
+            positionType: 'absolute',
+            position: { bottom: guideStep?.action === 'NEXT' ? (compactUi ? 430 : 340) : (compactUi ? 450 : 315), left: 0 },
+            width: '100%',
+            height: guideStep?.action === 'NEXT' ? (compactUi ? 661 : 630) : (compactUi ? 554 : 480),
+            alignItems: 'center',
+            justifyContent: 'center',
+            display: tutorialImageVisible ? 'flex' : 'none'
+          }}
+        >
+          <UiEntity
+            uiTransform={{
+              width: guideStep?.action === 'NEXT' ? (compactUi ? 1176 : 1120) : (compactUi ? 1204 : 1120),
+              height: guideStep?.action === 'NEXT' ? (compactUi ? 661 : 630) : (compactUi ? 554 : 480)
+            }}
+            uiBackground={imauiImage(tutorialImage ?? 'fase1.png')}
+          />
+        </UiEntity>
         {/* Guided tutorial message */}
+        <UiEntity
+          uiTransform={{
+            positionType: 'absolute',
+            position: { bottom: compactUi ? 124 : 92, left: compactUi ? 420 : 610 },
+            width: compactUi ? 1080 : 700,
+            height: compactUi ? 112 : 76,
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            display: tutorialCompleteVisible ? 'flex' : 'none'
+          }}
+          uiBackground={{ color: { r: 0.015, g: 0.025, b: 0.075, a: 0.92 } }}
+        >
+          <Label
+            value='E = CHANGE BLOCK'
+            fontSize={font(18)}
+            color={{ r: 0.2, g: 1, b: 0.9, a: 1 }}
+            uiTransform={{ width: '100%', height: '33%' }}
+            textAlign='middle-center'
+          />
+          <Label
+            value='F = AUTOPLACE'
+            fontSize={font(18)}
+            color={{ r: 0.2, g: 1, b: 0.9, a: 1 }}
+            uiTransform={{ width: '100%', height: '33%' }}
+            textAlign='middle-center'
+          />
+          <Label
+            value='TAP / CLICK = PLACE (EXTRA POINTS)'
+            fontSize={font(18)}
+            color={{ r: 1, g: 0.84, b: 0.25, a: 1 }}
+            uiTransform={{ width: '100%', height: '34%' }}
+            textAlign='middle-center'
+          />
+        </UiEntity>
         <UiEntity
           uiTransform={{
             positionType: 'absolute',
@@ -1910,13 +2337,13 @@ function applyHudRenderer(): void {
             justifyContent: 'center',
             display: (tutorialTipVisible || tutorialCompleteVisible) ? 'flex' : 'none'
           }}
-          uiBackground={{ color: { r: 0.01, g: 0.035, b: 0.075, a: 0.96 } }}
+          uiBackground={uiVariant('tutorial_message_box', compactUi)}
         >
           <Label
             value={tutorialCompleteVisible ? tutorialPracticeMessage() : tutorialTip}
             fontSize={font(tutorialCompleteVisible ? 20 : 19)}
             color={tutorialCompleteVisible ? { r: 0.2, g: 1, b: 0.85, a: 1 } : { r: 0.9, g: 0.96, b: 1, a: 1 }}
-            uiTransform={{ width: guideAdvanceAvailable || tutorialCompleteVisible ? '74%' : '94%', height: '100%' }}
+            uiTransform={{ width: guideAdvanceAvailable || tutorialCompleteVisible || tutorialSkipAvailable ? '58%' : '94%', height: '100%' }}
             textAlign='middle-center'
           />
           <UiEntity
@@ -1927,19 +2354,43 @@ function applyHudRenderer(): void {
               justifyContent: 'center',
               display: guideAdvanceAvailable || (tutorialCompleteVisible && tutorialReadyAvailable) ? 'flex' : 'none'
             }}
-            uiBackground={{ color: tutorialCompleteVisible ? { r: 0.05, g: 0.55, b: 0.46, a: 1 } : { r: 0.04, g: 0.32, b: 0.34, a: 1 } }}
+            uiBackground={uiVariant(tutorialCompleteVisible ? 'tutorial_ready_button' : 'tutorial_next_button', compactUi)}
             onMouseDown={() => {
+              clickFlash('tutorial-next')
               if (tutorialCompleteVisible) finishTutorialGuide(true)
               else if (guideStep) completeTutorialGuideAction(guideStep.action)
             }}
           >
             <Label
-              value={tutorialCompleteVisible ? 'READY' : 'NEXT'}
+              value=''
               fontSize={font(20)}
               color={{ r: 1, g: 1, b: 1, a: 1 }}
               uiTransform={{ width: '100%', height: '100%' }}
               textAlign='middle-center'
             />
+          </UiEntity>
+          <UiEntity
+            uiTransform={{
+              width: compactUi ? 190 : 116,
+              height: compactUi ? 64 : 44,
+              alignItems: 'center',
+              justifyContent: 'center',
+              display: tutorialSkipAvailable ? 'flex' : 'none'
+            }}
+            uiBackground={{ color: { r: 0.55, g: 0.04, b: 0.09, a: 0.95 } }}
+            onMouseDown={() => {
+              clickFlash('tutorial-skip')
+              finishTutorialGuide(true)
+            }}
+          >
+            <Label
+              value='SKIP'
+              fontSize={font(18)}
+              color={{ r: 1, g: 1, b: 1, a: 1 }}
+              uiTransform={{ width: '100%', height: '100%' }}
+              textAlign='middle-center'
+            />
+            {clickFlashOverlay('tutorial-next')}
           </UiEntity>
         </UiEntity>
         {/* Piece picker */}
@@ -1953,24 +2404,20 @@ function applyHudRenderer(): void {
             alignItems: 'center',
             display: (inBuild || tutorialGuideActive) ? 'flex' : 'none'
           }}
-          uiBackground={{ color: { r: 0.05, g: 0.05, b: 0.2, a: 0.88 } }}
+          uiBackground={uiVariant('piece_selector_panel', compactUi)}
         >
             <Label
-              value={tutorialGuideActive ? 'SELECT BLOCK' : 'CURRENT BLOCK'}
+              value=''
               fontSize={blockPanelFont(10)}
               color={{ r: 0.5, g: 0.5, b: 0.9, a: 0.9 }}
-              uiTransform={{ width: '100%', height: compactUi ? 18 : 10 }}
+              uiTransform={{ positionType: 'absolute', position: { top: compactUi ? -24 : -16, left: 0 }, width: '100%', height: compactUi ? 26 : 16 }}
               textAlign='middle-center'
             />
             <UiEntity
-              uiTransform={{ width: '100%', height: compactUi ? 76 : 46, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}
+              uiTransform={{ width: '100%', height: compactUi ? 76 : 46, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', margin: { bottom: compactUi ? 18 : 10 } }}
             >
               {PART_TYPES.map(pt => {
                 const isSelected = pt === PART_TYPES[selectedIndex]
-                const col = PART_UI_COLOR[pt]
-                const tint = isSelected
-                  ? col
-                  : { r: col.r * 0.5, g: col.g * 0.5, b: col.b * 0.5, a: 0.6 }
                 return (
                   <UiEntity
                     key={pt}
@@ -1980,38 +2427,41 @@ function applyHudRenderer(): void {
                       alignItems: 'center',
                       justifyContent: 'center'
                     }}
-                    uiBackground={{ color: isSelected
-                      ? { r: 0.12, g: 0.12, b: 0.45, a: 1 }
-                      : { r: 0.02, g: 0.02, b: 0.1, a: 0.8 }
+                    uiBackground={uiVariant(isSelected ? 'piece_button_selected' : 'piece_button_inactive', compactUi)}
+                    onMouseDown={() => {
+                      clickFlash(`piece-${pt}`)
+                      selectPart(PART_TYPES.indexOf(pt), inBuild, 'button')
                     }}
-                    onMouseDown={() => selectPart(PART_TYPES.indexOf(pt), inBuild, 'button')}
                   >
-                    <Label
-                      value={PART_SYMBOL[pt]}
-                      fontSize={blockPanelFont(pt === 'CYLINDER' ? 34 : 30)}
-                      color={tint}
-                      uiTransform={{ width: '100%', height: '100%' }}
-                      textAlign='middle-center'
+                    <UiEntity
+                      uiTransform={{ positionType: 'absolute', width: compactUi ? 138 : 84, height: compactUi ? 138 : 84, display: isSelected ? 'flex' : 'none' }}
+                      uiBackground={{ color: { r: 0.55, g: 1, b: 0.62, a: 0.34 } }}
                     />
+                    <UiEntity
+                      uiTransform={{ positionType: 'absolute', width: isSelected ? (compactUi ? 192 : 118) : (compactUi ? 158 : 96), height: isSelected ? (compactUi ? 192 : 118) : (compactUi ? 158 : 96) }}
+                      uiBackground={partIcon(pt)}
+                    />
+                    {clickFlashOverlay(`piece-${pt}`)}
                   </UiEntity>
                 )
               })}
             </UiEntity>
             <UiEntity
-              uiTransform={{ width: '100%', height: compactUi ? 22 : 14, alignItems: 'center', justifyContent: 'center' }}
+              uiTransform={{ width: '100%', height: compactUi ? 22 : 14, margin: { top: compactUi ? 14 : 8 }, alignItems: 'center', justifyContent: 'center' }}
               uiBackground={{ color: { r: 0.015, g: 0.018, b: 0.05, a: 0.92 } }}
             >
               <Label
-                value={tutorialGuideActive ? (guideStep?.action === 'COMPLETE' ? '<color=#00ffff>E</color> CHANGE  |  <color=#00ffff>F</color> PLACE  |  TAP = SELECT+PLACE' : guideStep?.action === 'PIECE_BUTTONS' ? 'TAP BUTTONS TO SELECT A PIECE' : '<color=#00ffff>E</color> CHANGE PIECE') : '<color=#00ffff>E/F</color> AUTO PLACE  |  TAP = FULL POINTS'}
-                fontSize={blockPanelFont(12)}
+                value={tutorialGuideActive ? 'SELECT BLOCK' : 'CURRENT BLOCK'}
+                fontSize={blockPanelFont(10)}
                 color={{ r: 0.92, g: 0.96, b: 1, a: 1 }}
-                uiTransform={{ width: '100%', height: '100%' }}
-                textAlign='middle-center'
-              />
-            </UiEntity>
+              uiTransform={{ width: '100%', height: '100%' }}
+              textAlign='middle-center'
+            />
+            {clickFlashOverlay('tutorial-skip')}
+          </UiEntity>
             <UiEntity
-              uiTransform={{ width: compactUi ? 540 : 340, height: compactUi ? 12 : 8 }}
-              uiBackground={{ color: { r: 0.02, g: 0.04, b: 0.08, a: 0.92 } }}
+              uiTransform={{ width: compactUi ? 540 : 340, height: compactUi ? 12 : 8, margin: { top: compactUi ? 6 : 3 } }}
+              uiBackground={uiVariant('cooldown_bar_bg', compactUi)}
             >
               <UiEntity
                 uiTransform={{ width: `${autoCooldownPct}%`, height: '100%' }}
@@ -2035,24 +2485,43 @@ function applyHudRenderer(): void {
             justifyContent: 'space-between',
             display: (inBuild || tutorialCompleteVisible) ? 'flex' : 'none'
           }}
+          uiBackground={uiVariant('artifact_hud_slots', compactUi)}
         >
-          {EQUIPPED_ARTIFACT_SLOTS.map((slot) => (
-            <UiEntity
-              key={`hud-${slot.id}`}
-              uiTransform={{
-                width: compactUi ? 132 : 84,
-                height: compactUi ? 112 : 72,
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center'
-              }}
-              uiBackground={{ color: displayedEquippedArtifacts[slot.index] ? { r: 0.04, g: 0.24, b: 0.28, a: 0.94 } : { r: 0.025, g: 0.06, b: 0.1, a: 0.9 } }}
-              onMouseDown={() => { tutorialCompleteVisible ? useTutorialPracticeArtifact(slot.index) : requestUseArtifact(slot.index) }}
-            >
-              <Label value={slot.label} fontSize={font(16)} color={{ r: 0.2, g: 1, b: 0.9, a: 1 }} uiTransform={{ width: '100%', height: '42%' }} textAlign='middle-center' />
-              <Label value={artifactShortLabel(displayedEquippedArtifacts[slot.index])} fontSize={font(10)} color={{ r: 0.65, g: 0.75, b: 0.85, a: 1 }} uiTransform={{ width: '100%', height: '58%' }} textAlign='middle-center' />
-            </UiEntity>
-          ))}
+          {EQUIPPED_ARTIFACT_SLOTS.map((slot) => {
+            const artifact = displayedEquippedArtifacts[slot.index]
+            const artifactCount = artifact ? displayedArtifactCount(snap, artifact, tutorialGuideActive) : 0
+            return (
+              <UiEntity
+                key={`hud-${slot.id}`}
+                uiTransform={{
+                  width: compactUi ? 132 : 84,
+                  height: compactUi ? 112 : 72,
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}
+                uiBackground={uiVariant('equipped_artifact_slot', compactUi)}
+                onMouseDown={() => {
+                  clickFlash(`hud-artifact-${slot.index}`)
+                  activateEquippedArtifactSlot(slot.index, artifact, tutorialCompleteVisible)
+                }}
+              >
+                <Label value={slot.label} fontSize={font(14)} color={{ r: 0.2, g: 1, b: 0.9, a: 1 }} uiTransform={{ positionType: 'absolute', position: { top: 2, left: 0 }, width: '100%', height: compactUi ? 24 : 16 }} textAlign='middle-center' />
+                {artifact ? (
+                  <UiEntity
+                    uiTransform={{ positionType: 'absolute', width: compactUi ? 236 : 148, height: compactUi ? 80 : 56 }}
+                    uiBackground={artifactThumbnail(artifact, compactUi)}
+                  />
+                ) : (
+                  <Label value='EMPTY' fontSize={font(9)} color={{ r: 0.5, g: 0.58, b: 0.68, a: 1 }} uiTransform={{ width: '100%', height: '100%' }} textAlign='middle-center' />
+                )}
+                {artifact ? (
+                  <Label value={`x${artifactCount}`} fontSize={font(10)} color={{ r: 1, g: 0.88, b: 0.25, a: 1 }} uiTransform={{ positionType: 'absolute', position: { right: 5, bottom: 3 }, width: compactUi ? 48 : 32, height: compactUi ? 22 : 15 }} textAlign='middle-right' />
+                ) : null}
+                {clickFlashOverlay(`hud-artifact-${slot.index}`)}
+              </UiEntity>
+            )
+          })}
         </UiEntity>
 
         {/* Community progress */}
@@ -2065,9 +2534,9 @@ function applyHudRenderer(): void {
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
-            display: !syncing && !inCinematic && !tutorialGuideActive && !profilePanelOpen && !rankingPanelOpen && !inventoryPanelOpen && !activePlayersPanelOpen && !shopPanelOpen ? 'flex' : 'none'
+            display: !syncing && !inCinematic && !tutorialGuideActive && !profilePanelOpen && !rankingPanelOpen && !inventoryPanelOpen && !activePlayersPanelOpen && !shopPanelOpen && !communityPanelOpen ? 'flex' : 'none'
           }}
-          uiBackground={{ color: { r: 0.015, g: 0.055, b: 0.09, a: 0.94 } }}
+          uiBackground={uiVariant('community_bar', compactUi)}
         >
           <Label
             value={communityLabel}
@@ -2080,14 +2549,11 @@ function applyHudRenderer(): void {
           />
           <UiEntity
             uiTransform={{ width: compactUi ? 1320 : 940, height: compactUi ? 24 : 16 }}
-            uiBackground={{ color: { r: 0.04, g: 0.08, b: 0.14, a: 1 } }}
+            uiBackground={uiVariant('community_bar', compactUi)}
           >
             <UiEntity
               uiTransform={{ width: `${communityPct}%`, height: '100%' }}
-              uiBackground={{ color: communityTierUpTimer > 0
-                ? { r: 1, g: 0.72, b: 0.16, a: 1 }
-                : { r: 0.05, g: 0.78, b: 0.66, a: 1 }
-              }}
+              uiBackground={uiVariant('community_fill', compactUi)}
             />
           </UiEntity>
         </UiEntity>
@@ -2103,7 +2569,7 @@ function applyHudRenderer(): void {
             justifyContent: 'center',
             display: feedbackText !== '' && !syncing ? 'flex' : 'none'
           }}
-          uiBackground={{ color: { r: 0.05, g: 0.05, b: 0.2, a: 0.88 } }}
+          uiBackground={uiVariant('feedback_message', compactUi)}
         >
           <Label
             value={feedbackText}
@@ -2156,48 +2622,78 @@ function applyHudRenderer(): void {
             positionType: 'absolute',
             position: { top: compactUi ? 220 : 300, left: compactUi ? 180 : 420 },
             width: compactUi ? 1560 : 1080,
-            height: compactUi ? 560 : 360,
+            height: compactUi ? 720 : 500,
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
             display: isPlaying && phase === 'BUILD_COMPLETE' && snap.resolved && !snap.isStale ? 'flex' : 'none'
           }}
-          uiBackground={{ color: { r: 0, g: 0, b: 0, a: 0.72 } }}
+          uiBackground={{ color: { r: 0.01, g: 0.015, b: 0.04, a: 0.98 } }}
         >
           <Label
             value={snap.performanceType === 'PERFECT' ? 'PERFECT BUILD!' : 'INCOMPLETE'}
-            fontSize={font(64)}
+            fontSize={font(52)}
             color={snap.performanceType === 'PERFECT'
               ? { r: 0, g: 1, b: 1, a: 1 }
               : { r: 1, g: 0.25, b: 0.15, a: 1 }}
-            uiTransform={{ width: '100%', height: compactUi ? 165 : 105 }}
+            uiTransform={{ width: '100%', height: compactUi ? 98 : 68 }}
             textAlign='middle-center'
           />
+          <UiEntity uiTransform={{ width: '94%', height: compactUi ? 82 : 58, flexDirection: 'row', alignItems: 'center' }}>
+            <Label
+              value={`PIECES: ${snap.partsAttached} / ${snap.partsRequired}`}
+              fontSize={font(22)}
+              color={{ r: 0.86, g: 0.9, b: 1, a: 1 }}
+              uiTransform={{ width: '33%', height: '100%' }}
+              textAlign='middle-center'
+            />
+            <Label
+              value={snap.mvpName ? `MVP: ${snap.mvpName} (${snap.mvpPoints})` : snap.players.length < 2 ? 'MVP: NEEDS 2+ PLAYERS' : 'MVP: NONE'}
+              fontSize={font(22)}
+              color={{ r: 1, g: 0.82, b: 0.2, a: 1 }}
+              uiTransform={{ width: '34%', height: '100%' }}
+              textAlign='middle-center'
+            />
+            <Label
+              value={`COMMUNITY TIER ${snap.communityTier}`}
+              fontSize={font(22)}
+              color={{ r: 0.2, g: 1, b: 0.85, a: 1 }}
+              uiTransform={{ width: '33%', height: '100%' }}
+              textAlign='middle-center'
+            />
+          </UiEntity>
           <Label
-            value={`PIECES PLACED: ${snap.partsAttached} / ${snap.partsRequired}`}
+            value={`COMMUNITY: ${snap.communityPoints} / ${communityRequired} PTS   |   ROUND BONUS: +${reward.crystalBonus} CRYSTALS, +${reward.pointBonus} PTS`}
             fontSize={font(20)}
-            color={{ r: 0.8, g: 0.8, b: 0.9, a: 0.85 }}
-            uiTransform={{ width: '100%', height: compactUi ? 68 : 42 }}
+            color={{ r: 0.2, g: 1, b: 0.9, a: 1 }}
+            uiTransform={{ width: '100%', height: compactUi ? 58 : 38 }}
             textAlign='middle-center'
           />
-          <Label
-            value={snap.mvpName
-              ? `ROUND MVP: ${snap.mvpName}   |   PTS: ${snap.mvpPoints}`
-              : snap.players.length < 2 ? 'MVP: REQUIRES 2+ PLAYERS' : 'MVP: NONE'}
-            fontSize={font(24)}
-            color={{ r: 1, g: 0.82, b: 0.2, a: 1 }}
-            uiTransform={{ width: '100%', height: compactUi ? 82 : 52 }}
-            textAlign='middle-center'
-          />
+          <UiEntity uiTransform={{ width: '88%', height: compactUi ? 62 : 42, flexDirection: 'row', alignItems: 'center' }}>
+            <Label value='TOP 5' fontSize={font(18)} color={{ r: 0.35, g: 0.9, b: 1, a: 1 }} uiTransform={{ width: '44%', height: '100%' }} textAlign='middle-left' />
+            <Label value='PTS' fontSize={font(18)} color={{ r: 0.35, g: 0.9, b: 1, a: 1 }} uiTransform={{ width: '18%', height: '100%' }} textAlign='middle-center' />
+            <Label value='PIECES' fontSize={font(18)} color={{ r: 0.35, g: 0.9, b: 1, a: 1 }} uiTransform={{ width: '20%', height: '100%' }} textAlign='middle-center' />
+            <Label value='LVL' fontSize={font(18)} color={{ r: 0.35, g: 0.9, b: 1, a: 1 }} uiTransform={{ width: '18%', height: '100%' }} textAlign='middle-center' />
+          </UiEntity>
+          {roundTopRows.map((player, index) => (
+            <UiEntity
+              key={`round-top-${player.name}-${index}`}
+              uiTransform={{ width: '88%', height: compactUi ? 58 : 38, flexDirection: 'row', alignItems: 'center' }}
+              uiBackground={{ color: index === 0 ? { r: 0.18, g: 0.14, b: 0.025, a: 0.9 } : { r: 0.035, g: 0.045, b: 0.11, a: index % 2 === 0 ? 0.72 : 0.42 } }}
+            >
+              <Label value={`${index + 1}. ${player.name}`} fontSize={font(18)} color={index === 0 ? { r: 1, g: 0.85, b: 0.25, a: 1 } : { r: 0.92, g: 0.94, b: 1, a: 1 }} uiTransform={{ width: '44%', height: '100%' }} textAlign='middle-left' />
+              <Label value={`${player.roundPoints}`} fontSize={font(18)} color={{ r: 0.2, g: 1, b: 0.85, a: 1 }} uiTransform={{ width: '18%', height: '100%' }} textAlign='middle-center' />
+              <Label value={`${player.correctPieces}`} fontSize={font(18)} color={{ r: 0.86, g: 0.9, b: 1, a: 1 }} uiTransform={{ width: '20%', height: '100%' }} textAlign='middle-center' />
+              <Label value={`${player.level}`} fontSize={font(18)} color={{ r: 1, g: 0.84, b: 0.25, a: 1 }} uiTransform={{ width: '18%', height: '100%' }} textAlign='middle-center' />
+            </UiEntity>
+          ))}
           <Label
             value={snap.playerStatus === 'ACTIVE'
-              ? levelProgress.isMaxLevel
-                ? `YOU EARNED: ${snap.roundPoints} PTS   |   LEVEL: ${levelProgress.level} MAX`
-                : `YOU EARNED: ${snap.roundPoints} PTS   |   LEVEL: ${levelProgress.level}   |   PTS TO NEXT LEVEL: ${levelProgress.pointsToNext}`
+              ? `YOU: ${snap.roundPoints} PTS   |   ${snap.correctPieces} PIECES   |   LEVEL ${levelProgress.level}`
               : 'JOIN GAME TO SCORE IN THE NEXT ROUND'}
             fontSize={font(20)}
             color={{ r: 0.2, g: 1, b: 0.85, a: 1 }}
-            uiTransform={{ width: '100%', height: compactUi ? 82 : 52 }}
+            uiTransform={{ width: '100%', height: compactUi ? 68 : 44 }}
             textAlign='middle-center'
           />
           <Label
@@ -2336,14 +2832,18 @@ function applyHudRenderer(): void {
             alignItems: 'center',
             display: inLeaderboardView && isSpectator ? 'flex' : 'none'
           }}
-          uiBackground={{ color: { r: 0.01, g: 0.04, b: 0.08, a: 0.92 } }}
+          uiBackground={uiVariant('leaderboard_camera_controls', compactUi)}
         >
           <UiEntity
             uiTransform={{ width: compactUi ? 150 : 96, height: '100%', alignItems: 'center', justifyContent: 'center' }}
-            uiBackground={{ color: { r: 0.03, g: 0.28, b: 0.28, a: 1 } }}
-            onMouseDown={previousLeaderboardMode}
+            uiBackground={uiVariant('leaderboard_arrow_buttons', compactUi)}
+            onMouseDown={() => {
+              clickFlash('leaderboard-prev')
+              previousLeaderboardMode()
+            }}
           >
             <Label value='<' fontSize={font(28)} color={{ r: 1, g: 1, b: 1, a: 1 }} uiTransform={{ width: '100%', height: '100%' }} textAlign='middle-center' />
+            {clickFlashOverlay('leaderboard-prev')}
           </UiEntity>
           <Label
             value={getLeaderboardModeLabel()}
@@ -2354,17 +2854,25 @@ function applyHudRenderer(): void {
           />
           <UiEntity
             uiTransform={{ width: compactUi ? 150 : 96, height: '100%', alignItems: 'center', justifyContent: 'center' }}
-            uiBackground={{ color: { r: 0.03, g: 0.28, b: 0.28, a: 1 } }}
-            onMouseDown={nextLeaderboardMode}
+            uiBackground={uiVariant('leaderboard_arrow_buttons', compactUi)}
+            onMouseDown={() => {
+              clickFlash('leaderboard-next')
+              nextLeaderboardMode()
+            }}
           >
             <Label value='>' fontSize={font(28)} color={{ r: 1, g: 1, b: 1, a: 1 }} uiTransform={{ width: '100%', height: '100%' }} textAlign='middle-center' />
+            {clickFlashOverlay('leaderboard-next')}
           </UiEntity>
           <UiEntity
             uiTransform={{ width: compactUi ? 150 : 88, height: '100%', alignItems: 'center', justifyContent: 'center' }}
-            uiBackground={{ color: { r: 0.34, g: 0.07, b: 0.12, a: 1 } }}
-            onMouseDown={closeLeaderboardCamera}
+            uiBackground={uiVariant('leaderboard_close_button', compactUi)}
+            onMouseDown={() => {
+              clickFlash('leaderboard-close')
+              closeLeaderboardCamera()
+            }}
           >
             <Label value='X' fontSize={font(20)} color={{ r: 1, g: 1, b: 1, a: 1 }} uiTransform={{ width: '100%', height: '100%' }} textAlign='middle-center' />
+            {clickFlashOverlay('leaderboard-close')}
           </UiEntity>
         </UiEntity>
 
@@ -2395,25 +2903,26 @@ function applyHudRenderer(): void {
           uiTransform={{
             positionType: 'absolute',
             position: { bottom: compactUi ? 132 : 92, left: compactUi ? 260 : 460 },
-            width: compactUi ? 160 : 260,
-            height: compactUi ? 64 : 58,
+            width: compactUi && isSpectator ? 640 : compactUi ? 160 : 260,
+            height: compactUi && isSpectator ? 256 : compactUi ? 64 : 58,
             alignItems: 'center',
             justifyContent: 'center',
-            display: !syncing && !tutorialVisible && !tutorialGuideActive && !inLeaderboardView && !(isSpectator && needsDailyTutorial()) ? 'flex' : 'none'
+            display: !syncing && !tutorialVisible && !tutorialGuideActive && !inLeaderboardView ? 'flex' : 'none'
           }}
-          uiBackground={{ color: isSpectator
-            ? { r: 0.04, g: 0.5, b: 0.42, a: 0.98 }
-            : { r: 0.42, g: 0.07, b: 0.12, a: 0.98 }
+          uiBackground={uiVariant(isSpectator ? 'join_button' : 'leave_button', compactUi)}
+          onMouseDown={() => {
+            clickFlash('participation')
+            isSpectator ? joinGame() : leaveGame()
           }}
-          onMouseDown={() => { isSpectator ? joinGame() : leaveGame() }}
         >
           <Label
-            value={participationLabel}
+            value='' 
             fontSize={font(15)}
             color={{ r: 1, g: 1, b: 1, a: 1 }}
             uiTransform={{ width: '100%', height: '100%' }}
             textAlign='middle-center'
           />
+          {clickFlashOverlay('participation')}
         </UiEntity>
 
 
@@ -2422,6 +2931,30 @@ function applyHudRenderer(): void {
     )
   }, { virtualWidth: 1920, virtualHeight: 1080 })
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
