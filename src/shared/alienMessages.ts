@@ -44,6 +44,8 @@ export const Messages = {
     sessionPoints: Schemas.Int,
     roundPoints: Schemas.Int,
     correctPieces: Schemas.Int,
+    roundCorrectPieces: Schemas.Int,
+    lastRoundCrystalsEarned: Schemas.Int,
     ownOccupiedMask: Schemas.Int,
     profileLoaded: Schemas.Boolean,
     tutorialCompleted: Schemas.Boolean,

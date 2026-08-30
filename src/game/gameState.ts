@@ -75,6 +75,8 @@ export interface ClientSnapshot {
   sessionPoints: number
   roundPoints: number
   correctPieces: number
+  roundCorrectPieces: number
+  lastRoundCrystalsEarned: number
   ownOccupiedMask: number
   profileLoaded: boolean
   tutorialCompleted: boolean
@@ -128,6 +130,8 @@ function emptySnapshot(): ClientSnapshot {
     sessionPoints: 0,
     roundPoints: 0,
     correctPieces: 0,
+    roundCorrectPieces: 0,
+    lastRoundCrystalsEarned: 0,
     ownOccupiedMask: 0,
     profileLoaded: false,
     tutorialCompleted: false,
@@ -259,6 +263,8 @@ export function initGameState(): void {
       sessionPoints: data.sessionPoints,
       roundPoints: data.roundPoints,
       correctPieces: data.correctPieces,
+      roundCorrectPieces: data.roundCorrectPieces,
+      lastRoundCrystalsEarned: data.lastRoundCrystalsEarned,
       ownOccupiedMask: data.ownOccupiedMask,
       profileLoaded: data.profileLoaded,
       tutorialCompleted: data.tutorialCompleted,

@@ -474,6 +474,7 @@ function tutorialPracticeTrySlot(slot: SlotDefinition): void {
   if (((tutorialPracticePlacedMask >> slotIndex) & 1) === 1) return
 
   const now = Date.now()
+  const noCooldownActive = now < tutorialPracticeNoCooldownUntil
   const lastClick = tutorialPracticeRecentClicks.get(slot.slotId) ?? 0
   if (now - lastClick < PLACEMENT_COOLDOWN_MS.manual[slot.requiredPart]) return
 
@@ -483,6 +484,7 @@ function tutorialPracticeTrySlot(slot: SlotDefinition): void {
     onWrongPart(slot.requiredPart)
     return
   }
+  if (!noCooldownActive && !canStartPlacementCooldown(selectedPart, 'manual')) return
 
   tutorialPracticeRecentClicks.set(slot.slotId, now)
   tutorialPracticeCommitSlot(slotIndex, 'manual')
@@ -2689,7 +2691,7 @@ function applyHudRenderer(): void {
           ))}
           <Label
             value={snap.playerStatus === 'ACTIVE'
-              ? `YOU: ${snap.roundPoints} PTS   |   ${snap.correctPieces} PIECES   |   LEVEL ${levelProgress.level}`
+              ? `YOU: ${snap.roundPoints} PTS   |   ${snap.roundCorrectPieces} PIECES   |   +${snap.lastRoundCrystalsEarned} CRYSTALS`
               : 'JOIN GAME TO SCORE IN THE NEXT ROUND'}
             fontSize={font(20)}
             color={{ r: 0.2, g: 1, b: 0.85, a: 1 }}

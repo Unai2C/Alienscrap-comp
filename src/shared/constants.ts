@@ -1,6 +1,6 @@
 // Timing
 export const BUILD_DURATION_SECONDS = 60
-export const BUILD_COMPLETE_SECONDS = 10
+export const BUILD_COMPLETE_SECONDS = 15
 export const COUNTDOWN_SECONDS = 2
 export const PERFORMANCE_DURATION_SECONDS = 3
 export const RESET_DELAY_SECONDS = 2
@@ -93,14 +93,14 @@ export type PlacementMode = 'manual' | 'auto'
 
 export const PLACEMENT_COOLDOWN_MS: Record<PlacementMode, Record<PartType, number>> = {
   manual: {
-    CUBE: 500,
-    CYLINDER: 750,
-    CONE: 1000
+    CUBE: 700,
+    CYLINDER: 1000,
+    CONE: 1300
   },
   auto: {
-    CUBE: 1400,
-    CYLINDER: 1800,
-    CONE: 2300
+    CUBE: 1800,
+    CYLINDER: 2300,
+    CONE: 2900
   }
 }
 

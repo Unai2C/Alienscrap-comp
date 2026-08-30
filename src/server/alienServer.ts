@@ -53,6 +53,7 @@ interface PlayerSession {
   sessionMvpAwards: number
   roundPoints: number
   roundCorrectPieces: number
+  lastRoundCrystalsEarned: number
   lastAttachAt: number
   nextAttachAt: number
   profileLoaded: boolean
@@ -274,6 +275,7 @@ function createSession(address: string): PlayerSession {
     sessionMvpAwards: 0,
     roundPoints: 0,
     roundCorrectPieces: 0,
+    lastRoundCrystalsEarned: 0,
     lastAttachAt: 0,
     nextAttachAt: 0,
     profileLoaded: false,
@@ -318,6 +320,7 @@ function leaveCompetitiveSession(session: PlayerSession, reason: string): void {
   session.joined = false
   session.roundPoints = 0
   session.roundCorrectPieces = 0
+  session.lastRoundCrystalsEarned = 0
   roundParticipants.delete(session.address)
   updateCommunitySessionPresence()
   if (wasPlaying) {
@@ -406,6 +409,11 @@ function crystalCandidates(): PlayerSession[] {
 }
 
 function awardRoundCrystals(perfect: boolean, mvp: PlayerSession | null): void {
+  for (const address of roundParticipants) {
+    const session = sessions.get(address)
+    if (session) session.lastRoundCrystalsEarned = 0
+  }
+
   const ranked = crystalCandidates()
   const tierReward = communityTierReward(communityTier)
   for (const session of ranked) {
@@ -426,6 +434,7 @@ function awardRoundCrystals(perfect: boolean, mvp: PlayerSession | null): void {
     const profile = profileStore.addCrystals(session.address, amount)
     if (!profile) continue
     session.crystals = profile.crystals
+    session.lastRoundCrystalsEarned = amount
     if (tierReward.pointBonus > 0) awardPoints(session, tierReward.pointBonus, 0, false)
   }
 }
@@ -504,6 +513,8 @@ function sendPlayerUpdate(session: PlayerSession): void {
     sessionPoints: session.sessionPoints,
     roundPoints: session.roundPoints,
     correctPieces: session.sessionCorrectPieces,
+    roundCorrectPieces: session.roundCorrectPieces,
+    lastRoundCrystalsEarned: session.lastRoundCrystalsEarned,
     ownOccupiedMask: ownOccupiedMask(session.address),
     profileLoaded: session.profileLoaded,
     tutorialCompleted: session.tutorialCompleted,
@@ -609,6 +620,7 @@ function joinCurrentBuildIfOpen(session: PlayerSession): boolean {
   roundParticipants.add(session.address)
   session.roundPoints = 0
   session.roundCorrectPieces = 0
+  session.lastRoundCrystalsEarned = 0
   console.log(
     `[SERVER] joined opening round player=${session.name} ` +
     `round=${state.roundNumber} secondsLeft=${timer.secondsLeft}`
@@ -655,6 +667,7 @@ function enterBuild(): void {
     roundParticipants.add(session.address)
     session.roundPoints = 0
     session.roundCorrectPieces = 0
+    session.lastRoundCrystalsEarned = 0
     session.nextAttachAt = 0
     session.artifactUsesThisRound = 0
     session.noCooldownUntil = 0
@@ -914,12 +927,24 @@ async function handleUseArtifact(address: string, slotIndex: number): Promise<vo
   session.equippedArtifacts[index] = null
   session.artifactUsesThisRound += 1
   persistArtifacts(session)
-  const until = Date.now() + ARTIFACT_DURATION_MS
+  const now = Date.now()
+  const until = now + ARTIFACT_DURATION_MS
   const state = RoundState.getMutable(roundEntity)
+  let placedPieces = false
   if (artifactType === 'NO_COOLDOWN') session.noCooldownUntil = until
   else if (artifactType === 'DOUBLE_PLACE') session.doublePlaceUntil = until
-  else if (artifactType === 'TRIPLE_PLACE') useTriplePlaceArtifact(state, session)
-  else if (artifactType === 'COMPLETE_TEMPLATE') useCompleteTemplateArtifact(state, session)
+  else if (artifactType === 'TRIPLE_PLACE') {
+    useTriplePlaceArtifact(state, session)
+    placedPieces = true
+  } else if (artifactType === 'COMPLETE_TEMPLATE') {
+    useCompleteTemplateArtifact(state, session)
+    placedPieces = true
+  }
+
+  if (placedPieces) {
+    session.lastAttachAt = now
+    session.nextAttachAt = Math.max(session.nextAttachAt, now + PLACEMENT_COOLDOWN_MS.auto.CUBE)
+  }
 
   sendArtifactResult(session, true)
   sendPlayerUpdate(session)
@@ -956,7 +981,7 @@ async function handleAttach(address: string, slotId: string, partType: string, m
 
   placeServerSlot(state, session, slotIndex, mode)
   session.lastAttachAt = now
-  session.nextAttachAt = noCooldownActive ? now : now + cooldownMs
+  session.nextAttachAt = noCooldownActive ? now : Math.max(session.nextAttachAt, now + cooldownMs)
 
   if (now < session.doublePlaceUntil && state.partsAttached < state.partsRequired) {
     const extraIndex = TEMPLATES[state.templateId as TemplateId].findIndex((item, index) => {
