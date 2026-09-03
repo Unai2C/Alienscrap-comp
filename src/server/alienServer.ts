@@ -66,6 +66,7 @@ interface PlayerSession {
   coneScrap: number
   artifactUsesThisRound: number
   equippedArtifacts: Array<ArtifactType | null>
+  equippedArtifactCounts: number[]
   artifactInventory: ArtifactType[]
   noCooldownUntil: number
   doublePlaceUntil: number
@@ -77,6 +78,7 @@ interface PlayerSession {
 }
 
 interface RosterEntry {
+  address: string
   name: string
   sessionPoints: number
   roundPoints: number
@@ -93,15 +95,15 @@ interface TrophyRecord {
 }
 
 const TIER_TEMPLATES: Record<DifficultyTier, TemplateId[]> = {
-  SOLO: ['CASTLE', 'PYRAMID', 'TOWER'],
-  SMALL_GROUP: ['ARCH', 'SPACESHIP', 'ROVER'],
-  SOCIAL_GROUP: ['KEEP', 'FORTRESS', 'ROBOT']
+  SOLO: ['CASTLE', 'PYRAMID', 'TOWER', 'FLYING_SAUCER'],
+  SMALL_GROUP: ['CASTLE_KEEP', 'ROCKET_CARRIER', 'ELEPHANT', 'DRAGON', 'ROVER', 'ARCH', 'SPACESHIP', 'OFFROAD_4X4', 'SEA_FORTRESS'],
+  SOCIAL_GROUP: ['KEEP', 'ROBOT', 'FORTRESS']
 }
 
 const TIER_BUILD_SECONDS: Record<DifficultyTier, number> = {
   SOLO: 75,
-  SMALL_GROUP: 60,
-  SOCIAL_GROUP: 60
+  SMALL_GROUP: 75,
+  SOCIAL_GROUP: 80
 }
 
 const PROFILE_AUTOSAVE_SECONDS = 20
@@ -140,6 +142,7 @@ const STARTER_ARTIFACTS: ArtifactType[] = [
   'TRIPLE_PLACE', 'TRIPLE_PLACE', 'TRIPLE_PLACE',
   'COMPLETE_TEMPLATE', 'COMPLETE_TEMPLATE', 'COMPLETE_TEMPLATE'
 ]
+const DEV_ALWAYS_FULL_ARTIFACT = true
 
 export function setupAlienServer(): void {
   roundEntity = engine.addEntity()
@@ -230,6 +233,11 @@ export function setupAlienServer(): void {
     await handleEquipArtifact(context.from, data.inventoryIndex)
   })
 
+  room.onMessage('unequipArtifact', async (data, context) => {
+    if (!context) return
+    await handleUnequipArtifact(context.from, data.slotIndex)
+  })
+
   room.onMessage('useArtifact', async (data, context) => {
     if (!context) return
     await handleUseArtifact(context.from, data.slotIndex)
@@ -288,6 +296,7 @@ function createSession(address: string): PlayerSession {
     coneScrap: 0,
     artifactUsesThisRound: 0,
     equippedArtifacts: [null, null],
+    equippedArtifactCounts: [0, 0],
     artifactInventory: [],
     noCooldownUntil: 0,
     doublePlaceUntil: 0,
@@ -350,10 +359,12 @@ async function ensureProfileLoaded(session: PlayerSession): Promise<void> {
   session.coneScrap = profile.coneScrap
   session.artifactInventory = [...profile.artifactInventory]
   session.equippedArtifacts = [profile.equippedArtifacts[0] ?? null, profile.equippedArtifacts[1] ?? null]
+  session.equippedArtifactCounts = [0, 1].map((index) => session.equippedArtifacts[index] ? Math.max(1, profile.equippedArtifactCounts[index] ?? 1) : 0)
   const hasPlayedBefore = profile.roundsPlayed > 0 || profile.totalXp > 0 || profile.correctPieces > 0
   if (!profile.starterArtifactsGranted && !hasPlayedBefore) {
     session.artifactInventory = [...STARTER_ARTIFACTS]
     session.equippedArtifacts = [null, null]
+    session.equippedArtifactCounts = [0, 0]
     profileStore.grantStarterArtifacts(session.address, session.artifactInventory)
     void profileStore.save(session.address)
   }
@@ -483,6 +494,20 @@ function playerStatus(session: PlayerSession): PlayerStatus {
   return 'SPECTATOR'
 }
 
+function grantDevFullArtifact(session: PlayerSession): void {
+  if (!DEV_ALWAYS_FULL_ARTIFACT) return
+  if (session.equippedArtifacts.some((artifact, index) => artifact === 'COMPLETE_TEMPLATE' && (session.equippedArtifactCounts[index] ?? 0) > 0)) return
+  if (session.artifactInventory.includes('COMPLETE_TEMPLATE')) return
+
+  const emptySlot = session.equippedArtifacts.findIndex((artifact) => artifact === null)
+  if (emptySlot >= 0) {
+    session.equippedArtifacts[emptySlot] = 'COMPLETE_TEMPLATE'
+    session.equippedArtifactCounts[emptySlot] = 1
+  } else {
+    session.artifactInventory.push('COMPLETE_TEMPLATE')
+  }
+}
+
 function joinCompetitiveSession(session: PlayerSession): void {
   if (!session.joined) {
     session.joined = true
@@ -507,7 +532,9 @@ function ownOccupiedMask(address: string): number {
 }
 
 function sendPlayerUpdate(session: PlayerSession): void {
+  grantDevFullArtifact(session)
   void room.send('playerUpdate', {
+    address: session.address,
     name: session.name,
     status: playerStatus(session),
     sessionPoints: session.sessionPoints,
@@ -530,6 +557,7 @@ function sendPlayerUpdate(session: PlayerSession): void {
     cylinderScrap: session.cylinderScrap,
     coneScrap: session.coneScrap,
     equippedArtifactsJson: JSON.stringify(session.equippedArtifacts),
+    equippedArtifactCountsJson: JSON.stringify(session.equippedArtifactCounts),
     artifactInventoryJson: JSON.stringify(session.artifactInventory),
     artifactUsesThisRound: session.artifactUsesThisRound,
     noCooldownUntil: session.noCooldownUntil,
@@ -543,6 +571,7 @@ function activeRoster(): RosterEntry[] {
     const session = sessions.get(address)
     if (!session || !isOnline(session)) continue
     roster.push({
+      address: session.address,
       name: session.name,
       sessionPoints: session.sessionPoints,
       roundPoints: session.roundPoints,
@@ -604,7 +633,7 @@ function setTimerSeconds(seconds: number): void {
 
 function difficultyForPlayers(playerCount: number): DifficultyTier {
   if (playerCount <= 1) return 'SOLO'
-  if (playerCount <= 4) return 'SMALL_GROUP'
+  if (playerCount <= 3) return 'SMALL_GROUP'
   return 'SOCIAL_GROUP'
 }
 
@@ -770,6 +799,7 @@ function enterBuildComplete(reason: 'perfect' | 'timeout'): void {
     profileStore.recordSessionLeader(leader.address)
     leader.sessionLeaderAwards += 1
   }
+  if (mvp) roundMvpPoints = mvp.roundPoints
 
   for (const address of roundParticipants) {
     const session = sessions.get(address)
@@ -828,12 +858,8 @@ function validArtifact(value: string): ArtifactType | null {
   return value === 'NO_COOLDOWN' || value === 'DOUBLE_PLACE' || value === 'TRIPLE_PLACE' || value === 'COMPLETE_TEMPLATE' ? value : null
 }
 
-function uniqueArtifactTypeCount(inventory: ArtifactType[]): number {
-  return new Set(inventory).size
-}
-
 function persistArtifacts(session: PlayerSession): void {
-  profileStore.setArtifacts(session.address, session.artifactInventory, session.equippedArtifacts)
+  profileStore.setArtifacts(session.address, session.artifactInventory, session.equippedArtifacts, session.equippedArtifactCounts)
 }
 
 function sendArtifactResult(session: PlayerSession, ok: boolean, reason = ''): void {
@@ -845,7 +871,6 @@ async function handleBuyArtifact(address: string, artifactValue: string): Promis
   await ensureProfileLoaded(session)
   const artifactType = validArtifact(artifactValue)
   if (!artifactType) return sendArtifactResult(session, false, 'unknown_artifact')
-  if (!session.artifactInventory.includes(artifactType) && uniqueArtifactTypeCount(session.artifactInventory) >= 9) return sendArtifactResult(session, false, 'inventory_full')
   if (currentPhase === 'BUILD' && roundParticipants.has(session.address)) return sendArtifactResult(session, false, 'buy_between_rounds')
 
   const profile = profileStore.spendCrystals(session.address, ARTIFACT_PRICE_CRYSTALS[artifactType])
@@ -862,15 +887,35 @@ async function handleBuyArtifact(address: string, artifactValue: string): Promis
 async function handleEquipArtifact(address: string, inventoryIndex: number): Promise<void> {
   const session = touchSession(address)
   await ensureProfileLoaded(session)
-  const slotIndex = session.equippedArtifacts.findIndex((artifact) => !artifact)
-  if (slotIndex < 0) return sendArtifactResult(session, false, 'slots_full')
-
   const index = Math.max(0, Math.floor(inventoryIndex))
   const artifactType = session.artifactInventory[index]
   if (!artifactType) return sendArtifactResult(session, false, 'empty_inventory_slot')
 
-  session.artifactInventory.splice(index, 1)
+  let slotIndex = session.equippedArtifacts.findIndex((artifact, equippedIndex) => artifact === artifactType && (session.equippedArtifactCounts[equippedIndex] ?? 0) > 0)
+  if (slotIndex < 0) slotIndex = session.equippedArtifacts.findIndex((artifact) => !artifact)
+  if (slotIndex < 0) return sendArtifactResult(session, false, 'slots_full')
+
+  const stackCount = session.artifactInventory.filter((artifact) => artifact === artifactType).length
+  session.artifactInventory = session.artifactInventory.filter((artifact) => artifact !== artifactType)
   session.equippedArtifacts[slotIndex] = artifactType
+  session.equippedArtifactCounts[slotIndex] = (session.equippedArtifactCounts[slotIndex] ?? 0) + stackCount
+  persistArtifacts(session)
+  sendArtifactResult(session, true)
+  sendPlayerUpdate(session)
+}
+
+async function handleUnequipArtifact(address: string, slotIndex: number): Promise<void> {
+  const session = touchSession(address)
+  await ensureProfileLoaded(session)
+
+  const index = Math.max(0, Math.floor(slotIndex))
+  const artifactType = session.equippedArtifacts[index]
+  if (!artifactType) return sendArtifactResult(session, false, 'empty_slot')
+
+  const stackCount = Math.max(1, session.equippedArtifactCounts[index] ?? 1)
+  session.equippedArtifacts[index] = null
+  session.equippedArtifactCounts[index] = 0
+  for (let count = 0; count < stackCount; count++) session.artifactInventory.push(artifactType)
   persistArtifacts(session)
   sendArtifactResult(session, true)
   sendPlayerUpdate(session)
@@ -922,9 +967,14 @@ async function handleUseArtifact(address: string, slotIndex: number): Promise<vo
 
   const index = Math.max(0, Math.floor(slotIndex))
   const artifactType = session.equippedArtifacts[index]
-  if (!artifactType) return sendArtifactResult(session, false, 'empty_slot')
+  const equippedCount = session.equippedArtifactCounts[index] ?? 0
+  if (!artifactType || equippedCount <= 0) return sendArtifactResult(session, false, 'empty_slot')
 
-  session.equippedArtifacts[index] = null
+  session.equippedArtifactCounts[index] = equippedCount - 1
+  if (session.equippedArtifactCounts[index] <= 0) {
+    session.equippedArtifacts[index] = null
+    session.equippedArtifactCounts[index] = 0
+  }
   session.artifactUsesThisRound += 1
   persistArtifacts(session)
   const now = Date.now()

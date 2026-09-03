@@ -5,6 +5,7 @@ import { ArtifactType, HEARTBEAT_SECONDS, PlacementMode, RoundPhase, STALE_THRES
 export type PlayerStatus = 'SPECTATOR' | 'QUEUED' | 'ACTIVE'
 
 export interface RosterPlayer {
+  address?: string
   name: string
   sessionPoints: number
   roundPoints: number
@@ -71,6 +72,7 @@ export interface ClientSnapshot {
   ageMs: number
   isStale: boolean
   playerStatus: PlayerStatus
+  playerAddress: string
   playerName: string
   sessionPoints: number
   roundPoints: number
@@ -92,6 +94,7 @@ export interface ClientSnapshot {
   cylinderScrap: number
   coneScrap: number
   equippedArtifacts: Array<ArtifactType | undefined>
+  equippedArtifactCounts: number[]
   artifactInventory: ArtifactType[]
   artifactUsesThisRound: number
   noCooldownUntil: number
@@ -126,6 +129,7 @@ function emptySnapshot(): ClientSnapshot {
     ageMs: Number.POSITIVE_INFINITY,
     isStale: true,
     playerStatus: 'SPECTATOR',
+    playerAddress: '',
     playerName: 'Scraper',
     sessionPoints: 0,
     roundPoints: 0,
@@ -147,6 +151,7 @@ function emptySnapshot(): ClientSnapshot {
     cylinderScrap: 0,
     coneScrap: 0,
     equippedArtifacts: [],
+    equippedArtifactCounts: [0, 0],
     artifactInventory: [],
     artifactUsesThisRound: 0,
     noCooldownUntil: 0,
@@ -250,16 +255,32 @@ function parseArtifactInventory(raw: string): ArtifactType[] {
   }
 }
 
+function parseEquippedArtifactCounts(raw: string, equippedArtifacts: Array<ArtifactType | undefined>): number[] {
+  try {
+    const parsed = JSON.parse(raw)
+    return [0, 1].map((index) => {
+      if (!equippedArtifacts[index]) return 0
+      const value = Array.isArray(parsed) ? parsed[index] : 0
+      return typeof value === 'number' && Number.isFinite(value) ? Math.max(1, Math.floor(value)) : 1
+    })
+  } catch (_) {
+    return [0, 1].map((index) => equippedArtifacts[index] ? 1 : 0)
+  }
+}
+
 export function initGameState(): void {
   if (initialized) return
   initialized = true
 
   room.onMessage('playerUpdate', (data) => {
     const serverStatus = data.status as PlayerStatus
+    if (serverStatus !== 'SPECTATOR') manualJoinRequired = false
+    const equippedArtifacts = parseEquippedArtifacts(data.equippedArtifactsJson)
     snapshot = {
       ...snapshot,
       playerName: data.name,
-      playerStatus: manualJoinRequired ? 'SPECTATOR' : serverStatus,
+      playerAddress: data.address,
+      playerStatus: serverStatus,
       sessionPoints: data.sessionPoints,
       roundPoints: data.roundPoints,
       correctPieces: data.correctPieces,
@@ -279,7 +300,8 @@ export function initGameState(): void {
       cubeScrap: data.cubeScrap,
       cylinderScrap: data.cylinderScrap,
       coneScrap: data.coneScrap,
-      equippedArtifacts: parseEquippedArtifacts(data.equippedArtifactsJson),
+      equippedArtifacts,
+      equippedArtifactCounts: parseEquippedArtifactCounts(data.equippedArtifactCountsJson, equippedArtifacts),
       artifactInventory: parseArtifactInventory(data.artifactInventoryJson),
       artifactUsesThisRound: data.artifactUsesThisRound,
       noCooldownUntil: data.noCooldownUntil,
@@ -342,7 +364,7 @@ export function initGameState(): void {
       lastLoggedRound = snapshot.roundNumber
       console.log(
         `[CLIENT] phase=${snapshot.phase} round=${snapshot.roundNumber} ` +
-        `template=${snapshot.templateId} players=${snapshot.players.length}`
+        `template=${snapshot.templateId} players=${snapshot.players.length} status=${snapshot.playerStatus}`
       )
     }
   })
@@ -366,6 +388,10 @@ export function requestBuyArtifact(artifactType: ArtifactType): void {
 
 export function requestEquipArtifact(inventoryIndex: number): void {
   void room.send('equipArtifact', { inventoryIndex })
+}
+
+export function requestUnequipArtifact(slotIndex: number): void {
+  void room.send('unequipArtifact', { slotIndex })
 }
 
 export function requestUseArtifact(slotIndex: number): void {

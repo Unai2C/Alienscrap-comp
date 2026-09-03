@@ -110,7 +110,7 @@ function createTrophy(record: TrophySnapshot, animate: boolean, orbitIndex: numb
   })
   TextShape.create(label, {
     text: `${record.templateId}\nCOMPLETED BY: ${record.builders || 'ALIEN SCRAPERS'}`,
-    fontSize: 2.9,
+    fontSize: 2.6,
     fontAutoSize: true,
     width: 10.5,
     height: 3,

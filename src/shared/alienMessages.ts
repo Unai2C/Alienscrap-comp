@@ -15,6 +15,7 @@ export const Messages = {
   requestLeaderboards: Schemas.Map({ requested: Schemas.Boolean }),
   buyArtifact: Schemas.Map({ artifactType: Schemas.String }),
   equipArtifact: Schemas.Map({ inventoryIndex: Schemas.Int }),
+  unequipArtifact: Schemas.Map({ slotIndex: Schemas.Int }),
   useArtifact: Schemas.Map({ slotIndex: Schemas.Int }),
 
   // Piece placement request.
@@ -39,6 +40,7 @@ export const Messages = {
 
   // Targeted player status.
   playerUpdate: Schemas.Map({
+    address: Schemas.String,
     name: Schemas.String,
     status: Schemas.String,
     sessionPoints: Schemas.Int,
@@ -61,6 +63,7 @@ export const Messages = {
     cylinderScrap: Schemas.Int,
     coneScrap: Schemas.Int,
     equippedArtifactsJson: Schemas.String,
+    equippedArtifactCountsJson: Schemas.String,
     artifactInventoryJson: Schemas.String,
     artifactUsesThisRound: Schemas.Int,
     noCooldownUntil: Schemas.Number,

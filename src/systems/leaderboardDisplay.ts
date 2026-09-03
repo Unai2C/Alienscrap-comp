@@ -33,11 +33,11 @@ const CAMERA_ROTATION = Quaternion.fromEulerDegrees(0, 200, 0)
 
 type LeaderboardMode =
   | 'TOTAL' | 'DAILY' | 'WEEKLY' | 'MVP' | 'ROUNDS'
-  | 'LEVEL' | 'PERFECT' | 'PIECES' | 'EXCELLENCE' | 'DOMINANCE'
+  | 'LEVEL' | 'PERFECT' | 'BLOCKS' | 'EXCELLENCE' | 'DOMINANCE'
 
 const MODES: LeaderboardMode[] = [
   'TOTAL', 'DAILY', 'WEEKLY', 'MVP', 'ROUNDS',
-  'LEVEL', 'PERFECT', 'PIECES', 'EXCELLENCE', 'DOMINANCE'
+  'LEVEL', 'PERFECT', 'BLOCKS', 'EXCELLENCE', 'DOMINANCE'
 ]
 
 interface ColumnDefinition {
@@ -268,7 +268,7 @@ function leaderboardRows(snapshot: ReturnType<typeof getClientSnapshot>): Leader
     case 'ROUNDS': return boards.rounds ?? []
     case 'LEVEL': return boards.level ?? []
     case 'PERFECT': return boards.perfect ?? []
-    case 'PIECES': return boards.pieces ?? []
+    case 'BLOCKS': return boards.pieces ?? []
     case 'EXCELLENCE': return boards.excellence ?? []
     case 'DOMINANCE': return boards.dominance ?? []
     default: return boards.total ?? []
@@ -319,7 +319,7 @@ function columnsForMode(): ColumnDefinition[] {
         { label: 'LVL', x: 0.68, width: 0.36, value: (player) => player.level },
         { label: 'PTS', x: 1.27, width: 0.56, value: (player) => player.points }
       ]
-    case 'PIECES':
+    case 'BLOCKS':
       return [
         { label: 'PCS', x: -0.12, width: 0.36, value: (player) => player.pieces ?? 0 },
         { label: 'LVL', x: 0.27, width: 0.34, value: (player) => player.level },

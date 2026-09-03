@@ -25,7 +25,7 @@ import {
   SCENE_CENTER
 } from '../shared/constants'
 import { getTemplate, SlotDefinition } from '../shared/templates'
-import { canStartPlacementCooldown, onWrongPart, playSuccess, showFeedback, startPlacementCooldown } from '../ui'
+import { canStartPlacementCooldown, onWrongPart, openArtifactShop, playPress, playSuccess, showFeedback, startPlacementCooldown } from '../ui'
 
 const visualEntities = new Set<Entity>()
 const recentClicks = new Map<string, number>()
@@ -73,20 +73,45 @@ interface PlacementLaunch {
 const solidVisuals: SolidVisual[] = []
 const sparkVisuals: SparkVisual[] = []
 const placementLaunches: PlacementLaunch[] = []
+const animatedPlacementKeys = new Set<string>()
 let celebrationRound = -1
 let celebrationPhase = ''
 let celebrationPhaseElapsed = 0
 let celebrationExploded = false
 let celebrationActive = false
+let observedRoundNumber = 0
+let observedTemplateId = ''
+let observedOwnOccupiedMask = 0
 
 const DBC_SCENE_MODELS = [
-  'assets/scene/Models/DBC/AS_ENVIROMENT_20260824.glb',
+  'assets/scene/Models/DBC/as_enviroment_20260902.glb',
+  'assets/scene/Models/DBC/base_nave01.glb',
+  'assets/scene/Models/DBC/base_nave02.glb',
+  'assets/scene/Models/DBC/console01.glb',
+  'assets/scene/Models/DBC/console02.glb',
+  'assets/scene/Models/DBC/laser_console_01.glb',
+  'assets/scene/Models/DBC/laser_console02.glb',
+  'assets/scene/Models/DBC/laser_dome01.glb',
+  'assets/scene/Models/DBC/laser_dome02.glb',
+  'assets/scene/Models/DBC/laser_dome03.glb',
+  'assets/scene/Models/DBC/laser_dome04.glb',
+  'assets/scene/Models/DBC/laser_dome05.glb',
+  'assets/scene/Models/DBC/laser_dome06.glb',
+  'assets/scene/Models/DBC/laser_dome07.glb',
+  'assets/scene/Models/DBC/laser_dome08.glb',
+  'assets/scene/Models/DBC/laser_dome09.glb',
+  'assets/scene/Models/DBC/laser_dome10.glb',
+  'assets/scene/Models/DBC/laser_dome11.glb',
+  'assets/scene/Models/DBC/laser_dome12.glb',
   'assets/scene/Models/DBC/Particles.glb',
   'assets/scene/Models/DBC/Plarform_light_L.glb',
   'assets/scene/Models/DBC/Plarform_light_R.glb',
+  'assets/scene/Models/DBC/plarform_light_l_02.glb',
+  'assets/scene/Models/DBC/plarform_light_r_02.glb',
   'assets/scene/Models/DBC/Top_dome01.glb',
   'assets/scene/Models/DBC/Top_dome02.glb'
 ]
+const INTERACTIVE_CONSOLE_MASK = ColliderLayer.CL_PHYSICS | ColliderLayer.CL_POINTER
 
 let arenaEntities: Entity[] | undefined
 let renderedStateKey = ''
@@ -155,6 +180,10 @@ function clearPlacementLaunches(): void {
   }
 }
 
+function placementAnimationKey(roundNumber: number, templateId: string, slotId: string): string {
+  return `${roundNumber}:${templateId}:${slotId}`
+}
+
 function clearVisualEntities(): void {
   for (const entity of visualEntities) {
     try {
@@ -168,17 +197,19 @@ function clearVisualEntities(): void {
 }
 
 function playerLaunchStart(target: Vector3): Vector3 {
-  const fallback = Vector3.create(target.x, target.y + 2.2, target.z + 2)
+  const fallback = Vector3.create(target.x, target.y + 2.2, target.z + 3.5)
   if (!Transform.has(engine.PlayerEntity)) return fallback
 
   const player = Transform.get(engine.PlayerEntity).position
   const dx = target.x - player.x
   const dz = target.z - player.z
   const distance = Math.max(0.001, Math.sqrt(dx * dx + dz * dz))
+  const sideX = -dz / distance
+  const sideZ = dx / distance
   return Vector3.create(
-    player.x + (dx / distance) * 0.9,
-    player.y + 1.45,
-    player.z + (dz / distance) * 0.9
+    player.x + (dx / distance) * 0.06 + sideX * 0.32,
+    player.y + 1.35,
+    player.z + (dz / distance) * 0.06 + sideZ * 0.32
   )
 }
 
@@ -209,11 +240,11 @@ function spawnPlacementLaunch(slot: SlotDefinition): void {
     scale,
     rotation: partRotation(slot.requiredPart),
     age: 0,
-    duration: mobileLiteMode() ? 0.42 : 0.55,
-    arcHeight: Math.max(1.1, Math.min(3.4, distance * 0.16))
+    duration: mobileLiteMode() ? 0.58 : 0.75,
+    arcHeight: Math.max(1.35, Math.min(4.2, distance * 0.22))
   })
 
-  while (placementLaunches.length > 8) removePlacementLaunch(0)
+  while (placementLaunches.length > 30) removePlacementLaunch(0)
 }
 
 function createGhost(slot: SlotDefinition): void {
@@ -340,7 +371,7 @@ function onSlotClick(slot: SlotDefinition): void {
   }
   if (snapshot.phase !== 'BUILD') return
   if (snapshot.playerStatus !== 'ACTIVE') {
-    showFeedback('Join the next round to place pieces')
+    showFeedback('Join the next round to place blocks')
     return
   }
 
@@ -367,6 +398,7 @@ function onSlotClick(slot: SlotDefinition): void {
 function setupArena(): void {
   if (arenaEntities !== undefined) return
   arenaEntities = DBC_SCENE_MODELS.map((src) => {
+    const isConsole = src.toLowerCase().includes('console')
     const entity = engine.addEntity()
     Transform.create(entity, {
       position: Vector3.create(SCENE_CENTER.x, SCENE_CENTER.y + 0.2, SCENE_CENTER.z),
@@ -375,9 +407,25 @@ function setupArena(): void {
     })
     GltfContainer.create(entity, {
       src,
-      visibleMeshesCollisionMask: ColliderLayer.CL_PHYSICS,
-      invisibleMeshesCollisionMask: ColliderLayer.CL_PHYSICS
+      visibleMeshesCollisionMask: isConsole ? INTERACTIVE_CONSOLE_MASK : ColliderLayer.CL_PHYSICS,
+      invisibleMeshesCollisionMask: isConsole ? INTERACTIVE_CONSOLE_MASK : ColliderLayer.CL_PHYSICS
     })
+    if (isConsole) {
+      pointerEventsSystem.onPointerDown(
+        {
+          entity,
+          opts: {
+            button: InputAction.IA_POINTER,
+            hoverText: 'Open artifact shop',
+            maxDistance: 12
+          }
+        },
+        () => {
+          playPress()
+          openArtifactShop()
+        }
+      )
+    }
     return entity
   })
 }
@@ -390,6 +438,8 @@ export function setupEntities(selectedPartProvider: () => PartType): void {
     if (data.ok) {
       const slot = getTemplate(getClientSnapshot().templateId)?.find((item) => item.slotId === data.slotId)
       if (slot) {
+        const snapshot = getClientSnapshot()
+        animatedPlacementKeys.add(placementAnimationKey(snapshot.roundNumber, snapshot.templateId, slot.slotId))
         spawnPlacementLaunch(slot)
         flashSlot(slot, Color4.create(0.2, 1, 0.85, 1))
       }
@@ -433,6 +483,11 @@ export function reconcileScene(): void {
   const slots = getTemplate(snapshot.templateId)
   if (!slots) return
 
+  const sameBuild = observedRoundNumber === snapshot.roundNumber && observedTemplateId === snapshot.templateId
+  const previousOwnMask = sameBuild ? observedOwnOccupiedMask : 0
+  const newlyOwnedMask = snapshot.occupiedMask & snapshot.ownOccupiedMask & ~previousOwnMask
+  if (!sameBuild) animatedPlacementKeys.clear()
+
   clearVisualEntities()
   const showAvailableSlots = snapshot.phase === 'BUILD'
   const canInteract = showAvailableSlots && snapshot.playerStatus === 'ACTIVE'
@@ -441,10 +496,19 @@ export function reconcileScene(): void {
     const slot = slots[index]
     const occupied = ((snapshot.occupiedMask >> index) & 1) === 1
     const owned = ((snapshot.ownOccupiedMask >> index) & 1) === 1
+    const newlyOwned = ((newlyOwnedMask >> index) & 1) === 1
     if (occupied) {
       createSolid(slot, index)
+      if (newlyOwned && snapshot.playerStatus === 'ACTIVE') {
+        const key = placementAnimationKey(snapshot.roundNumber, snapshot.templateId, slot.slotId)
+        if (!animatedPlacementKeys.has(key)) {
+          animatedPlacementKeys.add(key)
+          spawnPlacementLaunch(slot)
+          flashSlot(slot, Color4.create(0.2, 1, 0.85, 1))
+        }
+      }
       if (snapshot.phase === 'BUILD' && snapshot.playerStatus === 'ACTIVE') {
-        if (!owned && !mobileLiteMode()) createOtherPlayerDim(slot)
+        if (!owned) createOtherPlayerDim(slot)
       }
     } else if (showAvailableSlots) {
       createGhost(slot)
@@ -453,6 +517,9 @@ export function reconcileScene(): void {
   }
 
   renderedStateKey = stateKey
+  observedRoundNumber = snapshot.roundNumber
+  observedTemplateId = snapshot.templateId
+  observedOwnOccupiedMask = snapshot.ownOccupiedMask
 }
 
 export function placementLaunchSystem(dt: number): void {
