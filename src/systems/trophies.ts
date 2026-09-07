@@ -1,6 +1,7 @@
 import {
   Billboard,
   BillboardMode,
+  ColliderLayer,
   engine,
   Entity,
   GltfContainer,
@@ -97,7 +98,7 @@ function createTrophy(record: TrophySnapshot, animate: boolean, orbitIndex: numb
     })
     GltfContainer.create(part, {
       src: PART_GLB[slot.requiredPart],
-      visibleMeshesCollisionMask: 0,
+      visibleMeshesCollisionMask: ColliderLayer.CL_PHYSICS,
       invisibleMeshesCollisionMask: 0
     })
   }
@@ -109,8 +110,8 @@ function createTrophy(record: TrophySnapshot, animate: boolean, orbitIndex: numb
     scale: Vector3.One()
   })
   TextShape.create(label, {
-    text: `${record.templateId}\nCOMPLETED BY: ${record.builders || 'ALIEN SCRAPERS'}`,
-    fontSize: 2.6,
+    text: `${record.templateId.charAt(0).toUpperCase()}${record.templateId.slice(1).toLowerCase().replace(/_/g, ' ')} by ${record.builders || 'Alien Scrapers'}`,
+    fontSize: 1.3,
     fontAutoSize: true,
     width: 10.5,
     height: 3,

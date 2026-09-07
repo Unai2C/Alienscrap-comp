@@ -1,9 +1,9 @@
 // Timing
 export const BUILD_DURATION_SECONDS = 60
 export const BUILD_COMPLETE_SECONDS = 15
-export const COUNTDOWN_SECONDS = 2
-export const PERFORMANCE_DURATION_SECONDS = 3
-export const RESET_DELAY_SECONDS = 2
+export const COUNTDOWN_SECONDS = 1
+export const PERFORMANCE_DURATION_SECONDS = 2
+export const RESET_DELAY_SECONDS = 0
 
 // Cinematic watchdog.
 export const CINEMATIC_WATCHDOG_GRACE_SECONDS = 2

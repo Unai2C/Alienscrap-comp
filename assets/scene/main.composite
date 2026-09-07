@@ -31,26 +31,6 @@
       }
     },
     {
-      "name": "inspector::Selection",
-      "jsonSchema": {
-        "type": "object",
-        "properties": {
-          "gizmo": {
-            "type": "integer",
-            "serializationType": "int32"
-          }
-        },
-        "serializationType": "map"
-      },
-      "data": {
-        "0": {
-          "json": {
-            "gizmo": 0
-          }
-        }
-      }
-    },
-    {
       "name": "inspector::Nodes",
       "jsonSchema": {
         "type": "object",
@@ -453,8 +433,9 @@
         "0": {
           "json": {
             "name": "Alienscrapyard",
-            "description": "Build together or fall apart. In AlienScrap, you and other players race against the clock to assemble a mystery structure from alien scrap pieces. Place the right piece in the right slot before time runs out.",
+            "description": "Race to build, fight for the top spot. In Alien Scrapyard, players compete against the clock to complete alien scrap builds by placing the right block in the right slot. Score more points with fast, accurate placements, use artifacts to gain an edge, and climb the rankings.",
             "thumbnail": "assets/scene/Images/Alienscrapyard_final_512x512.png",
+            "ageRating": "A",
             "categories": [
               "game"
             ],
@@ -593,8 +574,8 @@
                   "z": {
                     "$case": "range",
                     "value": [
-                      10,
-                      12
+                      9,
+                      13
                     ]
                   }
                 },

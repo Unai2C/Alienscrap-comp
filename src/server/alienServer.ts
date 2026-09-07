@@ -69,6 +69,7 @@ interface PlayerSession {
   equippedArtifactCounts: number[]
   artifactInventory: ArtifactType[]
   noCooldownUntil: number
+  activeArtifactSlot: number
   doublePlaceUntil: number
   level: number
   roundsPlayed: number
@@ -122,6 +123,9 @@ let communityTier = 1
 let communityPoints = 0
 let communityMilestoneSeq = 0
 let communitySessionHadPlayers = false
+let buildCompletePending = false
+let buildCompletePendingAt = 0
+let buildCompletePendingReason: 'perfect' | 'timeout' = 'perfect'
 
 const templateCursor: Record<DifficultyTier, number> = {
   SOLO: 0,
@@ -142,7 +146,7 @@ const STARTER_ARTIFACTS: ArtifactType[] = [
   'TRIPLE_PLACE', 'TRIPLE_PLACE', 'TRIPLE_PLACE',
   'COMPLETE_TEMPLATE', 'COMPLETE_TEMPLATE', 'COMPLETE_TEMPLATE'
 ]
-const DEV_ALWAYS_FULL_ARTIFACT = true
+const DEV_ALWAYS_FULL_ARTIFACT = false
 
 export function setupAlienServer(): void {
   roundEntity = engine.addEntity()
@@ -240,7 +244,18 @@ export function setupAlienServer(): void {
 
   room.onMessage('useArtifact', async (data, context) => {
     if (!context) return
-    await handleUseArtifact(context.from, data.slotIndex)
+    try {
+      await handleUseArtifact(context.from, data.slotIndex)
+    } finally {
+      const session = sessions.get(normalizeAddress(context.from))
+      void room.send('artifactUseFinished', {
+        slotIndex: data.slotIndex,
+        serverTime: Date.now(),
+        activeArtifactSlot: session?.activeArtifactSlot ?? -1,
+        noCooldownUntil: session?.noCooldownUntil ?? 0,
+        doublePlaceUntil: session?.doublePlaceUntil ?? 0
+      }, { to: [context.from] })
+    }
   })
 
   room.onMessage('attach', async (data, context) => {
@@ -299,6 +314,7 @@ function createSession(address: string): PlayerSession {
     equippedArtifactCounts: [0, 0],
     artifactInventory: [],
     noCooldownUntil: 0,
+    activeArtifactSlot: -1,
     doublePlaceUntil: 0,
     level: 1,
     roundsPlayed: 0,
@@ -331,6 +347,10 @@ function leaveCompetitiveSession(session: PlayerSession, reason: string): void {
   session.roundCorrectPieces = 0
   session.lastRoundCrystalsEarned = 0
   roundParticipants.delete(session.address)
+  session.noCooldownUntil = 0
+  session.doublePlaceUntil = 0
+  session.activeArtifactSlot = -1
+  admitWaitingPlayerToEmptyBuild()
   updateCommunitySessionPresence()
   if (wasPlaying) {
     console.log(
@@ -516,8 +536,11 @@ function joinCompetitiveSession(session: PlayerSession): void {
     console.log(`[SERVER] queued player=${session.name} address=${session.address.slice(0, 8)}`)
   }
 
-  if (currentPhase === 'IDLE' || (currentPhase === 'BUILD' && roundParticipants.size === 0)) enterBuild()
-  else joinCurrentBuildIfOpen(session)
+  if (currentPhase === 'IDLE') enterBuild()
+  else {
+    admitWaitingPlayerToEmptyBuild()
+    joinCurrentBuildIfOpen(session)
+  }
 }
 
 function ownOccupiedMask(address: string): number {
@@ -561,6 +584,8 @@ function sendPlayerUpdate(session: PlayerSession): void {
     artifactInventoryJson: JSON.stringify(session.artifactInventory),
     artifactUsesThisRound: session.artifactUsesThisRound,
     noCooldownUntil: session.noCooldownUntil,
+    serverTime: Date.now(),
+    activeArtifactSlot: session.activeArtifactSlot,
     doublePlaceUntil: session.doublePlaceUntil
   }, { to: [session.address] })
 }
@@ -637,14 +662,26 @@ function difficultyForPlayers(playerCount: number): DifficultyTier {
   return 'SOCIAL_GROUP'
 }
 
-function joinCurrentBuildIfOpen(session: PlayerSession): boolean {
+function admitWaitingPlayerToEmptyBuild(): void {
+  if (currentPhase !== 'BUILD' || roundParticipants.size > 0 || buildCompletePending) return
+  const next = eligiblePlayers().find((session) => session.profileLoaded)
+  if (!next) return
+  if (joinCurrentBuildIfOpen(next, true)) {
+    next.noCooldownUntil = 0
+    next.doublePlaceUntil = 0
+    next.nextAttachAt = 0
+    sendPlayerUpdate(next)
+  }
+}
+
+function joinCurrentBuildIfOpen(session: PlayerSession, resumeEmptyBuild = false): boolean {
   if (currentPhase !== 'BUILD' || roundParticipants.has(session.address)) return false
 
   const state = RoundState.get(roundEntity)
   const timer = GameTimer.get(timerEntity)
   const openingSeconds = TIER_BUILD_SECONDS[currentDifficulty]
   const graceOpen = state.partsAttached === 0 && timer.secondsLeft >= openingSeconds - JOIN_GRACE_SECONDS
-  if (!graceOpen) return false
+  if (!graceOpen && !resumeEmptyBuild) return false
 
   roundParticipants.add(session.address)
   session.roundPoints = 0
@@ -757,6 +794,8 @@ function sessionLeader(): PlayerSession | null {
 
 function enterBuildComplete(reason: 'perfect' | 'timeout'): void {
   if (currentPhase !== 'BUILD') return
+  buildCompletePending = false
+  buildCompletePendingAt = 0
   const state = RoundState.getMutable(roundEntity)
   state.performanceType = getPerformanceType(state.partsAttached, state.partsRequired)
 
@@ -836,6 +875,17 @@ function enterBuildComplete(reason: 'perfect' | 'timeout'): void {
   )
 }
 
+function scheduleBuildComplete(reason: 'perfect' | 'timeout'): void {
+  if (reason === 'timeout') {
+    enterBuildComplete(reason)
+    return
+  }
+  if (buildCompletePending) return
+  buildCompletePending = true
+  buildCompletePendingAt = Date.now() + 2000
+  buildCompletePendingReason = reason
+}
+
 function enterCountdown(): void {
   if (currentPhase !== 'BUILD_COMPLETE') return
   setPhase('COUNTDOWN')
@@ -893,7 +943,16 @@ async function handleEquipArtifact(address: string, inventoryIndex: number): Pro
 
   let slotIndex = session.equippedArtifacts.findIndex((artifact, equippedIndex) => artifact === artifactType && (session.equippedArtifactCounts[equippedIndex] ?? 0) > 0)
   if (slotIndex < 0) slotIndex = session.equippedArtifacts.findIndex((artifact) => !artifact)
-  if (slotIndex < 0) return sendArtifactResult(session, false, 'slots_full')
+  if (slotIndex < 0) {
+    slotIndex = 0
+    const replacedArtifact = session.equippedArtifacts[slotIndex]
+    const replacedCount = Math.max(0, session.equippedArtifactCounts[slotIndex] ?? 0)
+    if (replacedArtifact && replacedCount > 0) {
+      for (let count = 0; count < replacedCount; count++) session.artifactInventory.push(replacedArtifact)
+    }
+    session.equippedArtifacts[slotIndex] = null
+    session.equippedArtifactCounts[slotIndex] = 0
+  }
 
   const stackCount = session.artifactInventory.filter((artifact) => artifact === artifactType).length
   session.artifactInventory = session.artifactInventory.filter((artifact) => artifact !== artifactType)
@@ -960,6 +1019,11 @@ function useCompleteTemplateArtifact(state: ReturnType<typeof RoundState.getMuta
     if (!taken) placeServerSlot(state, session, index, 'auto')
   }
 }
+
+function hasActiveTimedArtifact(session: PlayerSession, now = Date.now()): boolean {
+  return now < Math.max(session.noCooldownUntil, session.doublePlaceUntil)
+}
+
 async function handleUseArtifact(address: string, slotIndex: number): Promise<void> {
   const session = touchSession(address)
   await ensureProfileLoaded(session)
@@ -970,6 +1034,10 @@ async function handleUseArtifact(address: string, slotIndex: number): Promise<vo
   const equippedCount = session.equippedArtifactCounts[index] ?? 0
   if (!artifactType || equippedCount <= 0) return sendArtifactResult(session, false, 'empty_slot')
 
+  const now = Date.now()
+  if (hasActiveTimedArtifact(session, now)) return sendArtifactResult(session, false, 'artifact_active')
+  if (index > 1 || !Number.isInteger(slotIndex) || slotIndex < 0 || buildCompletePending) return sendArtifactResult(session, false, 'not_active_build')
+
   session.equippedArtifactCounts[index] = equippedCount - 1
   if (session.equippedArtifactCounts[index] <= 0) {
     session.equippedArtifacts[index] = null
@@ -977,12 +1045,17 @@ async function handleUseArtifact(address: string, slotIndex: number): Promise<vo
   }
   session.artifactUsesThisRound += 1
   persistArtifacts(session)
-  const now = Date.now()
   const until = now + ARTIFACT_DURATION_MS
   const state = RoundState.getMutable(roundEntity)
   let placedPieces = false
-  if (artifactType === 'NO_COOLDOWN') session.noCooldownUntil = until
-  else if (artifactType === 'DOUBLE_PLACE') session.doublePlaceUntil = until
+  if (artifactType === 'NO_COOLDOWN') {
+    session.noCooldownUntil = until
+    session.nextAttachAt = 0
+    session.activeArtifactSlot = index
+  } else if (artifactType === 'DOUBLE_PLACE') {
+    session.doublePlaceUntil = until
+    session.activeArtifactSlot = index
+  }
   else if (artifactType === 'TRIPLE_PLACE') {
     useTriplePlaceArtifact(state, session)
     placedPieces = true
@@ -998,7 +1071,8 @@ async function handleUseArtifact(address: string, slotIndex: number): Promise<vo
 
   sendArtifactResult(session, true)
   sendPlayerUpdate(session)
-  if (state.partsAttached >= state.partsRequired) enterBuildComplete('perfect')
+  if (state.partsAttached >= state.partsRequired) scheduleBuildComplete('perfect')
+  console.log(`[ARTIFACT] activated type=${artifactType} slot=${index} player=${session.name}`)
   broadcastState()
 }
 
@@ -1042,7 +1116,7 @@ async function handleAttach(address: string, slotId: string, partType: string, m
   }
 
   void room.send('attachResult', { slotId, ok: true, reason: '', required: requiredPart }, { to: [session.address] })
-  if (state.partsAttached >= state.partsRequired) enterBuildComplete('perfect')
+  if (state.partsAttached >= state.partsRequired) scheduleBuildComplete('perfect')
   broadcastState()
 }
 
@@ -1073,9 +1147,16 @@ function serverTick(dt: number): void {
   const elapsedSeconds = Math.floor(timerAccumulator)
   timerAccumulator -= elapsedSeconds
   pruneExpiredSessions()
+  admitWaitingPlayerToEmptyBuild()
   updateCommunitySessionPresence()
 
   if (currentPhase === 'IDLE') {
+    broadcastState()
+    return
+  }
+
+  if (buildCompletePending) {
+    if (Date.now() >= buildCompletePendingAt) enterBuildComplete(buildCompletePendingReason)
     broadcastState()
     return
   }
@@ -1085,7 +1166,7 @@ function serverTick(dt: number): void {
   bumpSeq()
 
   if (timer.secondsLeft <= 0) {
-    if (currentPhase === 'BUILD') enterBuildComplete('timeout')
+    if (currentPhase === 'BUILD') scheduleBuildComplete('timeout')
     else if (currentPhase === 'BUILD_COMPLETE') enterCountdown()
     else if (currentPhase === 'COUNTDOWN') enterPerform()
     else if (currentPhase === 'PERFORM') enterReset()

@@ -152,7 +152,7 @@ function createText(
   const entity = track(engine.addEntity())
   Transform.create(entity, {
     parent: displayRoot,
-    position: Vector3.create(x, y, -0.08),
+    position: Vector3.create(x, y, -0.22),
     rotation: Quaternion.Identity(),
     scale: Vector3.One()
   })
@@ -208,7 +208,7 @@ function createHitbox(
   const entity = track(engine.addEntity())
   Transform.create(entity, {
     parent: displayRoot,
-    position: Vector3.create(x, y, -0.16),
+    position: Vector3.create(x, y, -0.34),
     rotation: Quaternion.Identity(),
     scale: Vector3.create(width, height, 0.12)
   })
@@ -232,7 +232,7 @@ function createAvatar(address: string | undefined, x: number, y: number): void {
   const entity = track(engine.addEntity())
   Transform.create(entity, {
     parent: displayRoot,
-    position: Vector3.create(x, y, -0.1),
+    position: Vector3.create(x, y, -0.24),
     rotation: Quaternion.Identity(),
     scale: Vector3.create(0.4, 0.4, 1)
   })

@@ -20,16 +20,28 @@ import {
   GLB_SCALE,
   PART_GLB,
   PLACEMENT_COOLDOWN_MS,
+  BUILD_COMPLETE_SECONDS,
   PERFORMANCE_DURATION_SECONDS,
+  RESET_DELAY_SECONDS,
   PartType,
   SCENE_CENTER
 } from '../shared/constants'
 import { getTemplate, SlotDefinition } from '../shared/templates'
-import { canStartPlacementCooldown, onWrongPart, openArtifactShop, playPress, playSuccess, showFeedback, startPlacementCooldown } from '../ui'
+import {
+  canStartPlacementCooldown,
+  claimCarriedPieceLaunchStart,
+  onWrongPart,
+  openArtifactShop,
+  playPress,
+  playSuccess,
+  showFeedback,
+  startPlacementCooldown
+} from '../ui'
 
 const visualEntities = new Set<Entity>()
 const recentClicks = new Map<string, number>()
-const PERFECT_EXPLOSION_SECONDS = COUNTDOWN_SECONDS + PERFORMANCE_DURATION_SECONDS + 0.55
+const PERFECT_BUILD_PENDING_SECONDS = 2
+const PERFECT_EXPLOSION_SECONDS = PERFECT_BUILD_PENDING_SECONDS + BUILD_COMPLETE_SECONDS + COUNTDOWN_SECONDS + PERFORMANCE_DURATION_SECONDS + RESET_DELAY_SECONDS - 0.55
 const SPARK_LIFETIME_SECONDS = 1.9
 
 interface SolidVisual {
@@ -74,6 +86,7 @@ const solidVisuals: SolidVisual[] = []
 const sparkVisuals: SparkVisual[] = []
 const placementLaunches: PlacementLaunch[] = []
 const animatedPlacementKeys = new Set<string>()
+const PLACEMENT_IMPACT_DELAY_MS = 640
 let celebrationRound = -1
 let celebrationPhase = ''
 let celebrationPhaseElapsed = 0
@@ -84,11 +97,14 @@ let observedTemplateId = ''
 let observedOwnOccupiedMask = 0
 
 const DBC_SCENE_MODELS = [
-  'assets/scene/Models/DBC/as_enviroment_20260902.glb',
+  'assets/scene/Models/DBC/as_enviroment_20260907.glb',
   'assets/scene/Models/DBC/base_nave01.glb',
   'assets/scene/Models/DBC/base_nave02.glb',
   'assets/scene/Models/DBC/console01.glb',
   'assets/scene/Models/DBC/console02.glb',
+  'assets/scene/Models/DBC/floating_platform1.glb',
+  'assets/scene/Models/DBC/floating_platform2.glb',
+  'assets/scene/Models/DBC/floating_platform3.glb',
   'assets/scene/Models/DBC/laser_console_01.glb',
   'assets/scene/Models/DBC/laser_console02.glb',
   'assets/scene/Models/DBC/laser_dome01.glb',
@@ -196,26 +212,9 @@ function clearVisualEntities(): void {
   sparkVisuals.length = 0
 }
 
-function playerLaunchStart(target: Vector3): Vector3 {
-  const fallback = Vector3.create(target.x, target.y + 2.2, target.z + 3.5)
-  if (!Transform.has(engine.PlayerEntity)) return fallback
-
-  const player = Transform.get(engine.PlayerEntity).position
-  const dx = target.x - player.x
-  const dz = target.z - player.z
-  const distance = Math.max(0.001, Math.sqrt(dx * dx + dz * dz))
-  const sideX = -dz / distance
-  const sideZ = dx / distance
-  return Vector3.create(
-    player.x + (dx / distance) * 0.06 + sideX * 0.32,
-    player.y + 1.35,
-    player.z + (dz / distance) * 0.06 + sideZ * 0.32
-  )
-}
-
 function spawnPlacementLaunch(slot: SlotDefinition): void {
   const target = slotPosition(slot)
-  const start = playerLaunchStart(target)
+  const start = claimCarriedPieceLaunchStart(target)
   const entity = engine.addEntity()
   const scale = Vector3.scale(slotScale(slot), mobileLiteMode() ? 0.75 : 0.9)
   const dx = target.x - start.x
@@ -247,7 +246,7 @@ function spawnPlacementLaunch(slot: SlotDefinition): void {
   while (placementLaunches.length > 30) removePlacementLaunch(0)
 }
 
-function createGhost(slot: SlotDefinition): void {
+function createGhost(slot: SlotDefinition): Entity {
   const entity = trackEntity(engine.addEntity())
   Transform.create(entity, {
     position: slotPosition(slot),
@@ -263,8 +262,9 @@ function createGhost(slot: SlotDefinition): void {
     albedoColor: GHOST_COLOR[slot.requiredPart],
     transparencyMode: MaterialTransparencyMode.MTM_ALPHA_BLEND,
     emissiveColor: GHOST_EMISSIVE[slot.requiredPart],
-    emissiveIntensity: 1.2
+    emissiveIntensity: 1.32 // Previous ghost brightness: 1.2; keep opacity at 0.22.
   })
+  return entity
 }
 
 function createHitbox(slot: SlotDefinition): void {
@@ -288,7 +288,7 @@ function createHitbox(slot: SlotDefinition): void {
   )
 }
 
-function createSolid(slot: SlotDefinition, index: number): void {
+function createSolid(slot: SlotDefinition, index: number, revealDelayMs = 0): void {
   const solid = trackEntity(engine.addEntity())
   const basePosition = slotPosition(slot)
   const baseScale = slotScale(slot)
@@ -296,7 +296,7 @@ function createSolid(slot: SlotDefinition, index: number): void {
   const baseRotation = partRotation(slot.requiredPart)
   Transform.create(solid, {
     position: basePosition,
-    scale: baseScale,
+    scale: revealDelayMs > 0 ? Vector3.Zero() : baseScale,
     rotation: baseRotation
   })
   GltfContainer.create(solid, {
@@ -320,6 +320,21 @@ function createSolid(slot: SlotDefinition, index: number): void {
     baseRotation,
     index
   })
+
+  if (revealDelayMs > 0) {
+    const ghost = createGhost(slot)
+    setTimeout(() => {
+      if (!Transform.has(solid)) return
+      Transform.getMutable(solid).scale = baseScale
+      if (visualEntities.delete(ghost)) engine.removeEntity(ghost)
+    }, revealDelayMs)
+  }
+}
+
+function schedulePlacementImpact(slot: SlotDefinition): void {
+  setTimeout(() => {
+    flashSlot(slot, Color4.create(0.2, 1, 0.85, 1))
+  }, PLACEMENT_IMPACT_DELAY_MS)
 }
 
 function createOtherPlayerDim(slot: SlotDefinition): void {
@@ -441,7 +456,7 @@ export function setupEntities(selectedPartProvider: () => PartType): void {
         const snapshot = getClientSnapshot()
         animatedPlacementKeys.add(placementAnimationKey(snapshot.roundNumber, snapshot.templateId, slot.slotId))
         spawnPlacementLaunch(slot)
-        flashSlot(slot, Color4.create(0.2, 1, 0.85, 1))
+        schedulePlacementImpact(slot)
       }
       return
     }
@@ -498,13 +513,14 @@ export function reconcileScene(): void {
     const owned = ((snapshot.ownOccupiedMask >> index) & 1) === 1
     const newlyOwned = ((newlyOwnedMask >> index) & 1) === 1
     if (occupied) {
-      createSolid(slot, index)
+      const revealDelayMs = newlyOwned && snapshot.playerStatus === 'ACTIVE' ? PLACEMENT_IMPACT_DELAY_MS : 0
+      createSolid(slot, index, revealDelayMs)
       if (newlyOwned && snapshot.playerStatus === 'ACTIVE') {
         const key = placementAnimationKey(snapshot.roundNumber, snapshot.templateId, slot.slotId)
         if (!animatedPlacementKeys.has(key)) {
           animatedPlacementKeys.add(key)
           spawnPlacementLaunch(slot)
-          flashSlot(slot, Color4.create(0.2, 1, 0.85, 1))
+          schedulePlacementImpact(slot)
         }
       }
       if (snapshot.phase === 'BUILD' && snapshot.playerStatus === 'ACTIVE') {
@@ -795,7 +811,7 @@ function spawnPerfectExplosion(): void {
     Color4.create(1, 0.25, 0.72, 1),
     Color4.create(0.45, 0.65, 1, 1)
   ]
-  const count = Math.min(mobileLiteMode() ? 12 : 36, solidVisuals.length * 2)
+  const count = Math.min(mobileLiteMode() ? 18 : 72, solidVisuals.length * 4)
 
   for (let index = 0; index < count; index++) {
     const source = solidVisuals[index % solidVisuals.length]
@@ -805,9 +821,9 @@ function spawnPerfectExplosion(): void {
     const radialX = origin.x - SCENE_CENTER.x
     const radialZ = origin.z - SCENE_CENTER.z
     const radialLength = Math.max(0.2, Math.sqrt(radialX * radialX + radialZ * radialZ))
-    const speed = 2.2 + (index % 5) * 0.42
+    const speed = 3.2 + (index % 5) * 0.62
     const entity = trackEntity(engine.addEntity())
-    const scale = 0.14 + (index % 4) * 0.045
+    const scale = 0.22 + (index % 4) * 0.065
 
     Transform.create(entity, {
       position: Vector3.create(origin.x, origin.y, origin.z),
@@ -819,7 +835,7 @@ function spawnPerfectExplosion(): void {
     Material.setPbrMaterial(entity, {
       albedoColor: color,
       emissiveColor: color,
-      emissiveIntensity: 5,
+      emissiveIntensity: 8,
       metallic: 0.15,
       roughness: 0.2
     })
@@ -827,7 +843,7 @@ function spawnPerfectExplosion(): void {
       entity,
       velocity: Vector3.create(
         (radialX / radialLength) * speed + Math.cos(angle) * 0.9,
-        2.8 + (index % 6) * 0.55,
+        4.2 + (index % 6) * 0.75,
         (radialZ / radialLength) * speed + Math.sin(angle) * 0.9
       ),
       age: 0,
@@ -865,16 +881,19 @@ function updateSparks(dt: number): void {
 }
 
 function cinematicPhaseOffset(phase: string): number {
-  if (phase === 'PERFORM') return COUNTDOWN_SECONDS
-  if (phase === 'RESET') return COUNTDOWN_SECONDS + PERFORMANCE_DURATION_SECONDS
+  if (phase === 'BUILD_COMPLETE') return PERFECT_BUILD_PENDING_SECONDS
+  if (phase === 'COUNTDOWN') return PERFECT_BUILD_PENDING_SECONDS + BUILD_COMPLETE_SECONDS
+  if (phase === 'PERFORM') return PERFECT_BUILD_PENDING_SECONDS + BUILD_COMPLETE_SECONDS + COUNTDOWN_SECONDS
+  if (phase === 'RESET') return PERFECT_BUILD_PENDING_SECONDS + BUILD_COMPLETE_SECONDS + COUNTDOWN_SECONDS + PERFORMANCE_DURATION_SECONDS
   return 0
 }
 
 export function perfectTemplateAnimationSystem(dt: number): void {
   const safeDt = Math.min(Math.max(dt, 0), 0.1)
   const snapshot = getClientSnapshot()
-  const cinematicPhase = snapshot.phase === 'COUNTDOWN' || snapshot.phase === 'PERFORM' || snapshot.phase === 'RESET'
-  const shouldAnimate = cinematicPhase && snapshot.performanceType === 'PERFECT' && snapshot.cinematicEligible
+  const completionHoldPhase = snapshot.phase === 'BUILD' && snapshot.partsRequired > 0 && snapshot.partsAttached >= snapshot.partsRequired
+  const cinematicPhase = snapshot.phase === 'BUILD_COMPLETE' || snapshot.phase === 'COUNTDOWN' || snapshot.phase === 'PERFORM' || snapshot.phase === 'RESET'
+  const shouldAnimate = completionHoldPhase || (cinematicPhase && snapshot.performanceType === 'PERFECT' && snapshot.cinematicEligible)
 
   if (!shouldAnimate) {
     if (celebrationActive) {
@@ -901,7 +920,7 @@ export function perfectTemplateAnimationSystem(dt: number): void {
   celebrationPhaseElapsed += safeDt
 
   const elapsed = cinematicPhaseOffset(snapshot.phase) + celebrationPhaseElapsed
-  if (false && !celebrationExploded && elapsed >= PERFECT_EXPLOSION_SECONDS) {
+  if (!celebrationExploded && elapsed >= PERFECT_EXPLOSION_SECONDS) {
     celebrationExploded = true
     spawnPerfectExplosion()
   }

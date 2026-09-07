@@ -98,6 +98,7 @@ export interface ClientSnapshot {
   artifactInventory: ArtifactType[]
   artifactUsesThisRound: number
   noCooldownUntil: number
+  activeArtifactSlot: number
   doublePlaceUntil: number
   leaderboards: PersistentLeaderboards
   leaderboardsLoading: boolean
@@ -155,6 +156,7 @@ function emptySnapshot(): ClientSnapshot {
     artifactInventory: [],
     artifactUsesThisRound: 0,
     noCooldownUntil: 0,
+    activeArtifactSlot: -1,
     doublePlaceUntil: 0,
     leaderboards: {
       daily: [],
@@ -268,11 +270,55 @@ function parseEquippedArtifactCounts(raw: string, equippedArtifacts: Array<Artif
   }
 }
 
+let artifactUsePendingUntil = 0
+let artifactProtocolReady = false
+let lastArtifactServerTime = 0
+
+export function isArtifactProtocolReady(): boolean {
+  return artifactProtocolReady
+}
+const effectDeadlines = new Map<string, { server: number; local: number }>()
+
+function localEffectDeadline(key: string, deadline: number, serverTime: number): number {
+  if (!Number.isFinite(serverTime) || serverTime <= 0 || !Number.isFinite(deadline)) return 0
+  if (deadline <= serverTime) {
+    effectDeadlines.delete(key)
+    return 0
+  }
+  const previous = effectDeadlines.get(key)
+  if (previous?.server === deadline) return previous.local
+  const local = Date.now() + Math.max(0, deadline - serverTime)
+  effectDeadlines.set(key, { server: deadline, local })
+  return local
+}
+
+export function isArtifactUsePending(): boolean {
+  return Date.now() < artifactUsePendingUntil
+}
+
+function confirmedArtifactState(data: { serverTime: number; activeArtifactSlot: number; noCooldownUntil: number; doublePlaceUntil: number }) {
+  if (!Number.isFinite(data.serverTime) || data.serverTime <= 0 || data.serverTime < lastArtifactServerTime) {
+    return { noCooldownUntil: snapshot.noCooldownUntil, doublePlaceUntil: snapshot.doublePlaceUntil, activeArtifactSlot: snapshot.activeArtifactSlot }
+  }
+  lastArtifactServerTime = data.serverTime
+  return {
+    noCooldownUntil: localEffectDeadline('NO_COOLDOWN', data.noCooldownUntil, data.serverTime),
+    doublePlaceUntil: localEffectDeadline('DOUBLE_PLACE', data.doublePlaceUntil, data.serverTime),
+    activeArtifactSlot: data.activeArtifactSlot
+  }
+}
+
 export function initGameState(): void {
   if (initialized) return
   initialized = true
+  room.onMessage('artifactUseFinished', (data) => {
+    artifactUsePendingUntil = 0
+    snapshot = { ...snapshot, ...confirmedArtifactState(data) }
+    console.log(`[ARTIFACT] confirmed slot=${data.activeArtifactSlot} noCooldownMs=${Math.max(0, snapshot.noCooldownUntil - Date.now())} doubleMs=${Math.max(0, snapshot.doublePlaceUntil - Date.now())}`)
+  })
 
   room.onMessage('playerUpdate', (data) => {
+    artifactProtocolReady = Number.isFinite(data.serverTime) && data.serverTime > 0 && Number.isInteger(data.activeArtifactSlot)
     const serverStatus = data.status as PlayerStatus
     if (serverStatus !== 'SPECTATOR') manualJoinRequired = false
     const equippedArtifacts = parseEquippedArtifacts(data.equippedArtifactsJson)
@@ -304,8 +350,7 @@ export function initGameState(): void {
       equippedArtifactCounts: parseEquippedArtifactCounts(data.equippedArtifactCountsJson, equippedArtifacts),
       artifactInventory: parseArtifactInventory(data.artifactInventoryJson),
       artifactUsesThisRound: data.artifactUsesThisRound,
-      noCooldownUntil: data.noCooldownUntil,
-      doublePlaceUntil: data.doublePlaceUntil
+      ...confirmedArtifactState(data)
     }
     refreshCinematicEligibility()
   })
@@ -395,6 +440,8 @@ export function requestUnequipArtifact(slotIndex: number): void {
 }
 
 export function requestUseArtifact(slotIndex: number): void {
+  if (isArtifactUsePending()) return
+  artifactUsePendingUntil = Date.now() + 5000
   void room.send('useArtifact', { slotIndex })
 }
 

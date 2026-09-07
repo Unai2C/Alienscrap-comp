@@ -3,7 +3,7 @@
   "runtimeVersion": "7",
   "display": {
     "title": "Alienscrapyard",
-    "description": "Build together or fall apart. In AlienScrap, you and other players race against the clock to assemble a mystery structure from alien scrap pieces. Place the right piece in the right slot before time runs out.",
+    "description": "Race to build, fight for the top spot. In Alien Scrapyard, players compete against the clock to complete alien scrap builds by placing the right block in the right slot. Score more points with fast, accurate placements, use artifacts to gain an edge, and climb the rankings.",
     "favicon": "favicon_asset",
     "navmapThumbnail": "assets/scene/Images/Alienscrapyard_final_512x512.png"
   },
@@ -60,8 +60,8 @@
           1
         ],
         "z": [
-          10,
-          12
+          9,
+          13
         ]
       },
       "cameraTarget": {
@@ -94,5 +94,6 @@
     "origin": "creator-hub",
     "projectId": "e6852128-eb30-4234-bc00-5c4a71b8cb67"
   },
-  "landscapeTerrain": true
+  "landscapeTerrain": true,
+  "rating": "A"
 }

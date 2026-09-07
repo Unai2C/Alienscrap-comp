@@ -37,6 +37,14 @@ export const Messages = {
     ok: Schemas.Boolean,
     reason: Schemas.String
   }),
+  artifactUseFinished: Schemas.Map({
+    slotIndex: Schemas.Int,
+    // Epoch milliseconds require float64: float32 loses a 10-second duration.
+    serverTime: Schemas.Double,
+    activeArtifactSlot: Schemas.Int,
+    noCooldownUntil: Schemas.Double,
+    doublePlaceUntil: Schemas.Double
+  }),
 
   // Targeted player status.
   playerUpdate: Schemas.Map({
@@ -66,8 +74,10 @@ export const Messages = {
     equippedArtifactCountsJson: Schemas.String,
     artifactInventoryJson: Schemas.String,
     artifactUsesThisRound: Schemas.Int,
-    noCooldownUntil: Schemas.Number,
-    doublePlaceUntil: Schemas.Number
+    noCooldownUntil: Schemas.Double,
+    serverTime: Schemas.Double,
+    activeArtifactSlot: Schemas.Int,
+    doublePlaceUntil: Schemas.Double
   }),
 
   leaderboardUpdate: Schemas.Map({
