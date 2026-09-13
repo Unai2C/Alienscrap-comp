@@ -1,9 +1,11 @@
+import { findAutoBuilderSlot, startAutoBuilder, stopAutoBuilder, takeAutoBuilderPlacements } from './shared/autoBuilder'
 import {
   engine, Entity, Transform, GltfContainer, AudioSource, UiCanvasInformation, Material, MaterialTransparencyMode, MeshCollider, MeshRenderer,
   ColliderLayer, InputAction, inputSystem, MainCamera, PointerEventType, pointerEventsSystem, VirtualCamera
 } from '@dcl/sdk/ecs'
 import { Color4, Quaternion, Vector3 } from '@dcl/sdk/math'
 import { movePlayerTo } from '~system/RestrictedActions'
+import { getPlayerData } from '~system/Players'
 import { ReactEcsRenderer, UiEntity, Label, ReactEcs } from '@dcl/sdk/react-ecs'
 import {
   PART_TYPES, PART_GLB, PART_LABEL, PartType,
@@ -48,6 +50,7 @@ let clickFlashTint = { r: 0.38, g: 1, b: 0.62, a: 0.4 }
 let showOnboarding = false
 let onboardingAlpha = 0
 let onboardingDismissed = true
+let tutorialReadyBlinkElapsed = 0
 let floatTime = 0
 let ambientEntity: Entity = 0 as Entity
 let currentMusicClip = ''
@@ -65,6 +68,9 @@ let inventoryPanelOpen = false
 let activePlayersPanelOpen = false
 let shopPanelOpen = false
 let communityPanelOpen = false
+let roundSummaryHidden = false
+let roundSummaryVisibilityRound = -1
+let queuePanelHidden = false
 let artifactDetail: ArtifactType | null = null
 type RankingTab = 'SESSION' | 'DAILY' | 'WEEKLY' | 'TOTAL'
 const RANKING_TABS: RankingTab[] = ['SESSION', 'DAILY', 'WEEKLY', 'TOTAL']
@@ -102,6 +108,7 @@ let tutorialArtifactInventoryCounts: Record<ArtifactType, number> = { NO_COOLDOW
 let tutorialEquippedArtifacts: Array<ArtifactType | undefined> = []
 let tutorialEquippedArtifactCounts: number[] = []
 let tutorialPracticeGuideStep = 0
+const tutorialAutoBuilder = { autoPlaceUntil: 0, nextAutoPlaceAt: 0, nextAutoPartIndex: 0 }
 let tutorialPracticeNoCooldownUntil = 0
 let tutorialPracticeDoublePlaceUntil = 0
 let localTimedArtifactTypes: Array<ArtifactType | undefined> = []
@@ -254,7 +261,7 @@ const TUTORIAL_GUIDE_STEPS: TutorialGuideStep[] = [
   },
   {
     action: 'NEXT',
-    message: 'The artifact shop lets you spend crystals on temporary tools. Buy artifacts there, equip them from your inventory, and use them to improve your score in real rounds.',
+    message: 'Bought artifacts equip automatically in a free slot or add uses to a matching equipped artifact. If both slots are full, find your purchase in the inventory.',
     cameraPosition: { x: 18, y: 13, z: 18 },
     cameraRotation: { pitch: 22, yaw: -41, roll: 0 }
   },
@@ -368,6 +375,10 @@ function tutorialPracticePartRotation(part: PartType): Quaternion {
   return Quaternion.multiply(templateYaw, partRotation)
 }
 
+function tutorialPracticePlaceholderRotation(): Quaternion {
+  return Quaternion.fromEulerDegrees(0, TUTORIAL_PRACTICE_YAW_DEGREES, 0)
+}
+
 function addTutorialPracticeEntity(): Entity {
   const entity = engine.addEntity()
   tutorialPracticeEntities.push(entity)
@@ -402,6 +413,7 @@ function clearTutorialPracticeVisuals(resetMask = true): void {
 }
 
 function clearTutorialPractice(): void {
+  stopAutoBuilder(tutorialAutoBuilder)
   clearTutorialPracticeVisuals(true)
   clearTutorialPracticeLaunches()
   tutorialPracticeNoCooldownUntil = 0
@@ -420,7 +432,7 @@ function spawnTutorialPracticeLaunch(slot: SlotDefinition): void {
   Transform.create(entity, {
     position: start,
     scale,
-    rotation: tutorialPracticePartRotation(slot.requiredPart)
+    rotation: tutorialPracticePlaceholderRotation()
   })
   GltfContainer.create(entity, {
     src: PART_GLB[slot.requiredPart],
@@ -759,11 +771,8 @@ function useTutorialPracticeArtifact(slotIndex: number): void {
     startPlacementCooldown('CUBE', 'auto')
     showFeedback('Triple place used')
   } else if (artifact === 'COMPLETE_TEMPLATE') {
-    for (let index = 0; index < TUTORIAL_PRACTICE_SLOTS.length; index++) {
-      tutorialPracticeCommitSlot(index, 'auto', false, false)
-    }
-    startPlacementCooldown('CUBE', 'auto')
-    showFeedback('Template completed')
+    startAutoBuilder(tutorialAutoBuilder, Date.now())
+    showFeedback('Auto Builder: one block every 2s for 10s')
   }
 
   advanceTutorialPracticeGuide(slotIndex === 0 ? 'ARTIFACT_1' : 'ARTIFACT_2')
@@ -918,7 +927,7 @@ function finishTutorialGuide(joinGameNow = false): void {
   setCarriedVisible(false)
   clearTutorialPractice()
   closeGameUi()
-  if (shouldJoin) movePlayerToStart()
+  movePlayerToStart()
   requestCompleteTutorial(shouldJoin)
 }
 
@@ -1005,11 +1014,12 @@ function setupEscapeClose(): void {
 function movePlayerToStart(): void {
   void movePlayerTo({
     newRelativePosition: { x: 24, y: 5, z: 18 },
-    cameraTarget: { x: SCENE_CENTER.x, y: 2.2, z: SCENE_CENTER.z }
+    cameraTarget: { x: SCENE_CENTER.x, y: 2.2, z: SCENE_CENTER.z },
+    avatarTarget: { x: SCENE_CENTER.x, y: 2, z: SCENE_CENTER.z }
   }).catch((error) => console.log(`[TUTORIAL] start move failed: ${error}`))
 }
 
-function needsDailyTutorial(): boolean {
+function needsFirstTutorial(): boolean {
   const snapshot = getClientSnapshot()
   return snapshot.profileLoaded && !snapshot.tutorialCompleted
 }
@@ -1350,12 +1360,13 @@ export function claimCarriedPieceLaunchStart(target: Vector3): Vector3 {
 function joinGame(): void {
   const snapshot = getClientSnapshot()
   if (!snapshot.profileLoaded) return
-  if (needsDailyTutorial() || !tutorialShownForParticipation) {
-    startTutorialGuide(true, true)
+  if (needsFirstTutorial()) {
+    startTutorialGuide(true, false)
     return
   }
   tutorialShownForParticipation = true
   joinPromptVisible = false
+  movePlayerToStart()
   requestJoinGame()
 }
 
@@ -1432,11 +1443,26 @@ let lastHudPlayerStatus = 'SPECTATOR'
 let blueFlashAlpha = 0
 let blueFlashFired = false
 
+function tickTutorialAutoBuilder(): void {
+  if (!tutorialGuideActive || currentTutorialAction() !== 'COMPLETE') {
+    stopAutoBuilder(tutorialAutoBuilder)
+    return
+  }
+  const count = takeAutoBuilderPlacements(tutorialAutoBuilder, Date.now())
+  for (let pulse = 0; pulse < count; pulse++) {
+    const index = findAutoBuilderSlot(tutorialAutoBuilder, tutorialPracticeOpenSlotIndex)
+    if (index < 0) { stopAutoBuilder(tutorialAutoBuilder); break }
+    tutorialPracticeCommitSlot(index, 'auto', false, false)
+  }
+}
+
 export function hudTickSystem(dt: number): void {
+  tickTutorialAutoBuilder()
   // Clear build hints on phase changes.
   const snap = getClientSnapshot()
   try { updateMusic(snap.playerStatus === 'ACTIVE', dt) } catch (_) {}
-  if (snap.profileLoaded && needsDailyTutorial() && !tutorialAutoStarted && !tutorialGuideActive) {
+  if (snap.profileLoaded && snap.playerAddress) loadAvatarSnapshot(snap.playerAddress)
+  if (snap.profileLoaded && needsFirstTutorial() && !tutorialAutoStarted && !tutorialGuideActive) {
     tutorialAutoStarted = true
     startTutorialGuide(false, false)
   }
@@ -1505,6 +1531,12 @@ export function hudTickSystem(dt: number): void {
   }
   updateTutorialPracticeLaunches(dt)
 
+  // READY and its prompt share a hard 1.5-second-on / 3-second-off cycle.
+  if (tutorialGuideActive && currentTutorialGuideStep()?.action === 'COMPLETE' && !inventoryPanelOpen && !shopPanelOpen) {
+    tutorialReadyBlinkElapsed = (tutorialReadyBlinkElapsed + Math.max(0, dt)) % 4.5
+  } else {
+    tutorialReadyBlinkElapsed = 0
+  }
   floatTime += dt
   const shoulderY = 1.5 + Math.sin(floatTime * 2.5) * 0.06
   for (const entity of shoulderEntities) {
@@ -1536,7 +1568,7 @@ const ROUND_SUMMARY_MOBILE_PANEL = {
   textureMode: 'stretch' as const,
   texture: { src: 'assets/images/imaui/panel_principal_Movil.png', filterMode: 'tri-linear' as const }
 }
-const avatarSnapshots = new Map<string, { body?: string; face?: string; loading?: boolean }>()
+const avatarSnapshots = new Map<string, { body?: string; face?: string; loading?: boolean; retryAt?: number }>()
 
 function uiImage(name: string) {
   return {
@@ -1549,22 +1581,62 @@ function uiVariant(baseName: string, compactUi: boolean) {
   return uiImage(`${baseName}_${compactUi ? 'mobile' : 'desktop'}.png`)
 }
 
+function snapshotUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const src = value.trim()
+  if (/^https:\/\//i.test(src)) return src
+  if (/^http:\/\//i.test(src)) return src.replace(/^http:/i, 'https:')
+  const hash = src.replace(/^ipfs:\/\/(?:ipfs\/)?/i, '')
+  if (/^(Qm[1-9A-HJ-NP-Za-km-z]{44}|baf[a-z2-7]+)$/.test(hash)) {
+    return `https://peer.decentraland.org/content/contents/${hash}`
+  }
+  return undefined
+}
+
+function snapshotUrls(avatar: { snapshots?: { body?: unknown; face256?: unknown; face?: unknown } } | undefined): { body?: string; face?: string } {
+  const snapshots = avatar?.snapshots ?? {}
+  return {
+    body: snapshotUrl(snapshots.body),
+    face: snapshotUrl(snapshots.face256) ?? snapshotUrl(snapshots.face)
+  }
+}
+
 function loadAvatarSnapshot(address: string): void {
   const key = address.toLowerCase()
   const cached = avatarSnapshots.get(key)
-  if (cached?.loading || cached?.body || cached?.face) return
-  avatarSnapshots.set(key, { loading: true })
-  void fetch(`https://peer.decentraland.org/lambdas/profiles/${key}`)
-    .then((response) => response.json())
-    .then((data) => {
-      const avatar = Array.isArray(data?.avatars) ? data.avatars[0]?.avatar : undefined
-      const snapshots = avatar?.snapshots ?? {}
-      avatarSnapshots.set(key, {
-        body: typeof snapshots.body === 'string' ? snapshots.body : undefined,
-        face: typeof snapshots.face256 === 'string' ? snapshots.face256 : typeof snapshots.face === 'string' ? snapshots.face : undefined
-      })
+  if (cached?.loading || cached?.body || Date.now() < (cached?.retryAt ?? 0)) return
+  avatarSnapshots.set(key, { ...cached, loading: true })
+  let pending = 2
+  const accept = (urls: { body?: string; face?: string }) => {
+    const previous = avatarSnapshots.get(key)
+    pending--
+    avatarSnapshots.set(key, {
+      body: previous?.body ?? urls.body,
+      face: previous?.face ?? urls.face,
+      loading: pending > 0,
+      retryAt: Date.now() + 15000
     })
-    .catch(() => avatarSnapshots.set(key, {}))
+  }
+  const run = (request: () => Promise<{ body?: string; face?: string }>) => {
+    let settled = false
+    const finish = (urls: { body?: string; face?: string }) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      accept(urls)
+    }
+    const timeout = setTimeout(() => finish({}), 8000)
+    void Promise.resolve().then(request).then(finish).catch(() => finish({}))
+  }
+  // Independent requests: a rejected or stalled native API must not block HTTP.
+  run(() => getPlayerData({ userId: address })
+    .then((response) => snapshotUrls(response.data?.avatar)))
+  run(() => fetch(`https://peer.decentraland.org/lambdas/profiles/${key}`)
+    .then((result) => {
+      if (!result.ok) throw new Error(`Profile HTTP ${result.status}`)
+      return result.json()
+    })
+    .then((data) => snapshotUrls(Array.isArray(data?.avatars) ? data.avatars[0]?.avatar : undefined)))
 }
 
 function avatarBackground(address?: string, shot: 'face' | 'body' = 'face') {
@@ -1664,7 +1736,7 @@ function artifactDescription(artifact: ArtifactType): string {
   if (artifact === 'NO_COOLDOWN') return '10s without placement cooldown'
   if (artifact === 'DOUBLE_PLACE') return '10s places a second matching block'
   if (artifact === 'TRIPLE_PLACE') return 'Places 3 blocks: cube, cylinder and pyramid'
-  return 'Completes the current template instantly'
+  return '10s: places one block every 2s. Keep building normally.'
 }
 
 function countArtifacts(list: Array<ArtifactType | undefined | null>, type: ArtifactType): number {
@@ -1690,7 +1762,7 @@ function displayedEquippedArtifactCount(snap: ReturnType<typeof getClientSnapsho
 }
 
 function isTimedArtifact(artifact: ArtifactType | undefined): boolean {
-  return artifact === 'NO_COOLDOWN' || artifact === 'DOUBLE_PLACE'
+  return artifact === 'NO_COOLDOWN' || artifact === 'DOUBLE_PLACE' || artifact === 'COMPLETE_TEMPLATE'
 }
 
 function timedArtifactUntil(snap: ReturnType<typeof getClientSnapshot>, artifact: ArtifactType | undefined, slotIndex: number, tutorialActive: boolean): number {
@@ -1701,7 +1773,7 @@ function timedArtifactUntil(snap: ReturnType<typeof getClientSnapshot>, artifact
     ? (tutorialActive ? tutorialPracticeNoCooldownUntil : snap.noCooldownUntil)
     : artifact === 'DOUBLE_PLACE'
       ? (tutorialActive ? tutorialPracticeDoublePlaceUntil : snap.doublePlaceUntil)
-      : 0
+      : artifact === 'COMPLETE_TEMPLATE' ? (tutorialActive ? tutorialAutoBuilder.autoPlaceUntil : snap.autoPlaceUntil) : 0
   const until = Math.max(localUntil, snapshotUntil)
   return until > now ? until : 0
 }
@@ -1718,7 +1790,8 @@ function anyTimedArtifactUntil(snap: ReturnType<typeof getClientSnapshot>, tutor
   const now = Date.now()
   const snapshotUntil = Math.max(
     tutorialActive ? tutorialPracticeNoCooldownUntil : snap.noCooldownUntil,
-    tutorialActive ? tutorialPracticeDoublePlaceUntil : snap.doublePlaceUntil
+    tutorialActive ? tutorialPracticeDoublePlaceUntil : snap.doublePlaceUntil,
+    tutorialActive ? tutorialAutoBuilder.autoPlaceUntil : snap.autoPlaceUntil
   )
   const localUntil = tutorialActive ? localTimedArtifactUntil.reduce((until, value) => Math.max(until, value ?? 0), 0) : 0
   const until = Math.max(snapshotUntil, localUntil)
@@ -1835,6 +1908,11 @@ function applyHudRenderer(): void {
     )
     const font = (size: number): number => compactUi ? Math.round(size) : size
     const blockPanelFont = (size: number): number => compactUi ? Math.round(size * 0.95) : size
+    if (roundSummaryVisibilityRound !== snap.roundNumber) {
+      roundSummaryVisibilityRound = snap.roundNumber
+      roundSummaryHidden = false
+    }
+    const roundSummaryAvailable = snap.playerStatus === 'ACTIVE' && phase === 'BUILD_COMPLETE' && snap.resolved && !snap.isStale
     const isPlaying = snap.playerStatus === 'ACTIVE'
     const isQueued = snap.playerStatus === 'QUEUED'
     const isCinematicViewer = isPlaying || isQueued
@@ -1853,7 +1931,7 @@ function applyHudRenderer(): void {
     const showInformationPanels = isPlaying
       ? !inCinematic && phase !== 'BUILD_COMPLETE'
       : !inCinematic
-    const dailyTutorialNeeded = isSpectator && needsDailyTutorial()
+    const firstTutorialNeeded = isSpectator && needsFirstTutorial()
     const roster = snap.players
     const rosterHeaderHeight = compactUi ? 44 : 52
     const rosterRowHeight = compactUi ? 30 : 30
@@ -1927,16 +2005,29 @@ function applyHudRenderer(): void {
     const tutorialReadyAvailable = true
     const tutorialSkipAvailable = tutorialGuideActive && tutorialGuideSkipAllowed && !tutorialCompleteVisible
     const displayedEquippedArtifacts = visibleEquippedArtifacts(snap, tutorialGuideActive)
-    const detailArtifactCount = artifactDetail ? countArtifacts(snap.artifactInventory, artifactDetail) : 0
+    const detailArtifactCount = artifactDetail ? (tutorialGuideActive ? tutorialArtifactCount(artifactDetail) : countArtifacts(snap.artifactInventory, artifactDetail)) : 0
     const detailArtifactInventoryIndex = artifactDetail ? firstArtifactIndex(snap.artifactInventory, artifactDetail) : -1
+    const detailTutorialSlot = [0, 1].find((index) => !tutorialEquippedArtifacts[index])
+    const detailArtifactCanEquip = tutorialGuideActive
+      ? detailArtifactCount > 0 && detailTutorialSlot !== undefined
+      : detailArtifactInventoryIndex >= 0
     const displayedPartsAttached = tutorialCompleteVisible ? bitCount(tutorialPracticePlacedMask) : snap.partsAttached
     const displayedPartsRequired = tutorialCompleteVisible ? TUTORIAL_PRACTICE_SLOTS.length : snap.partsRequired
-    const queueStatusVisible = isQueued && !tutorialGuideActive && !tutorialVisible && !inCinematic && phase !== 'BUILD_COMPLETE'
-    const tutorialTipVisible = (tutorialGuideActive || tutorialModeActive || dailyTutorialNeeded || isQueued) && !tutorialCompleteVisible && !tutorialVisible && !inCinematic
+    if (!isQueued) queuePanelHidden = false
+    const queueStatusVisible = isQueued && !tutorialGuideActive && !tutorialVisible && !inCinematic
+    const queueBuildProgressPct = Math.max(0, Math.min(100, Math.round((snap.partsAttached / partsRequired) * 100)))
+    const queueTimeRemaining = phase === 'BUILD' || phase === 'BUILD_COMPLETE'
+      ? Math.max(0, snap.secondsLeft)
+      : Math.max(0, cinematicSecondsLeft(phase, snap.secondsLeft))
+    const queueTimeProgressPct = phase === 'BUILD_COMPLETE' ? roundSummaryTimePct : phase === 'BUILD'
+      ? Math.max(0, Math.min(100, Math.round((snap.secondsLeft / 80) * 100)))
+      : Math.max(0, Math.min(100, Math.round((queueTimeRemaining / (COUNTDOWN_SECONDS + PERFORMANCE_DURATION_SECONDS + RESET_DELAY_SECONDS)) * 100)))
+    const tutorialReadyPulse = tutorialCompleteVisible && !inventoryPanelOpen && !shopPanelOpen && tutorialReadyBlinkElapsed < 1.5 ? 1 : 0
+    const tutorialTipVisible = (tutorialGuideActive || tutorialModeActive || firstTutorialNeeded || isQueued) && !tutorialCompleteVisible && !tutorialVisible && !inCinematic
     const guideAdvanceAvailable = guideStep !== null && (guideStep.action === 'NEXT' || guideStep.action === 'ARTIFACT_REVIEW' || (guideStep.action === 'PIECE' && tutorialPieceKeyChanged) || (guideStep.action === 'F' && tutorialFKeyPressed) || (guideStep.action === 'PIECE_BUTTONS' && tutorialPieceButtonChanged))
     const tutorialTip = tutorialGuideActive && guideStep !== null
       ? guideStep.message
-      : dailyTutorialNeeded
+      : firstTutorialNeeded
       ? 'Tutorial: start the tutorial to learn the game before joining.'
       : isSpectator
       ? 'Tutorial: you are spectating. Press JOIN GAME when you want to enter the next round.'
@@ -2119,6 +2210,10 @@ function applyHudRenderer(): void {
               uiTransform={{ width: '100%', height: '100%' }}
               textAlign='middle-center'
             />
+            <UiEntity
+              uiTransform={{ positionType: 'absolute', position: { top: 0, left: 0 }, width: '100%', height: '100%', pointerFilter: 'none', display: tutorialReadyPulse ? 'flex' : 'none' }}
+              uiBackground={{ color: { r: 0.55, g: 1, b: 0.85, a: 0.75 } }}
+            />
             {clickFlashOverlay('top-tutorial-ready')}
           </UiEntity>
           <UiEntity
@@ -2210,10 +2305,11 @@ function applyHudRenderer(): void {
             positionType: 'absolute',
             position: { top: compactUi ? 122 : 98, left: compactUi ? 430 : 610 },
             width: compactUi ? 1060 : 700,
-            height: compactUi ? 76 : 54,
+            height: compactUi ? 192 : 132,
+            flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
-            display: queueStatusVisible ? 'flex' : 'none'
+            display: queueStatusVisible && !queuePanelHidden ? 'flex' : 'none'
           }}
           uiBackground={{ color: { r: 0.015, g: 0.025, b: 0.075, a: 0.9 } }}
         >
@@ -2221,11 +2317,50 @@ function applyHudRenderer(): void {
             value='IN QUEUE - WAITING FOR NEXT ROUND'
             fontSize={font(compactUi ? 44 : 32)}
             color={{ r: 1, g: 0.84, b: 0.25, a: 1 }}
-            uiTransform={{ width: '100%', height: '100%' }}
+            uiTransform={{ width: '100%', height: compactUi ? 62 : 42 }}
             textAlign='middle-center'
           />
+          <Label
+            value={`CURRENT BUILD: ${snap.partsAttached} / ${partsRequired} BLOCKS`}
+            fontSize={font(compactUi ? 26 : 16)}
+            color={{ r: 0.3, g: 0.95, b: 1, a: 1 }}
+            uiTransform={{ width: '90%', height: compactUi ? 34 : 22 }}
+            textAlign='middle-left'
+          />
+          <UiEntity
+            uiTransform={{ width: '90%', height: compactUi ? 14 : 9 }}
+            uiBackground={{ color: { r: 0.02, g: 0.08, b: 0.14, a: 1 } }}
+          >
+            <UiEntity
+              uiTransform={{ width: `${queueBuildProgressPct}%`, height: '100%' }}
+              uiBackground={{ color: { r: 0.12, g: 0.92, b: 0.72, a: 1 } }}
+            />
+          </UiEntity>
+          <Label
+            value={(phase === 'BUILD_COMPLETE' ? 'SUMMARY ENDS IN: ' : phase === 'BUILD' ? 'CURRENT ROUND ENDS IN: ' : 'YOUR ROUND STARTS IN: ') + `${queueTimeRemaining}s`}
+            fontSize={font(compactUi ? 26 : 16)}
+            color={{ r: 0.9, g: 0.96, b: 1, a: 1 }}
+            uiTransform={{ width: '90%', height: compactUi ? 34 : 22, margin: { top: compactUi ? 8 : 5 } }}
+            textAlign='middle-left'
+          />
+          <UiEntity
+            uiTransform={{ width: '90%', height: compactUi ? 14 : 9 }}
+            uiBackground={{ color: { r: 0.02, g: 0.08, b: 0.14, a: 1 } }}
+          >
+            <UiEntity
+              uiTransform={{ width: `${queueTimeProgressPct}%`, height: '100%' }}
+              uiBackground={{ color: { r: 0.3, g: 0.62, b: 1, a: 1 } }}
+            />
+          </UiEntity>
         </UiEntity>
 
+        <UiEntity
+          uiTransform={{ positionType: 'absolute', position: { top: compactUi ? 122 : 98, left: compactUi ? 1495 : 1315 }, width: compactUi ? 140 : 90, height: compactUi ? 54 : 36, zIndex: 20, display: queueStatusVisible ? 'flex' : 'none' }}
+          uiBackground={{ color: { r: 0.02, g: 0.16, b: 0.18, a: 1 } }}
+          onMouseDown={() => { queuePanelHidden = !queuePanelHidden; playPress() }}
+        >
+          <Label value={queuePanelHidden ? 'SHOW' : 'HIDE'} fontSize={font(compactUi ? 26 : 18)} uiTransform={{ width: '100%', height: '100%' }} textAlign='middle-center' />
+        </UiEntity>
         {/* Active players */}
         <UiEntity
           uiTransform={{
@@ -2319,10 +2454,23 @@ function applyHudRenderer(): void {
         <UiEntity
           uiTransform={{
             positionType: 'absolute',
+            position: { top: 0, left: 0 },
+            width: '100%',
+            height: '100%',
+            pointerFilter: 'block',
+            zIndex: 900,
+            display: shopPanelOpen ? 'flex' : 'none'
+          }}
+          uiBackground={{ color: { r: 0.005, g: 0.01, b: 0.03, a: 0.3 } }}
+        />
+        <UiEntity
+          uiTransform={{
+            positionType: 'absolute',
             position: { top: expandedPanelTop, right: expandedPanelRight },
             width: compactUi ? 1120 : shopPanelOpen ? 1200 : 680,
             height: activePlayersPanelOpen ? (compactUi ? 640 : 420) : shopPanelOpen ? (compactUi ? 940 : 660) : artifactPanelOpen ? (compactUi ? 940 : 500) : profilePanelOpen ? (compactUi ? 780 : 540) : communityPanelOpen ? (compactUi ? 640 : 420) : (compactUi ? 860 : 720),
             flexDirection: 'column',
+            zIndex: shopPanelOpen ? 901 : 10,
             display: (profilePanelOpen || rankingPanelOpen || inventoryPanelOpen || activePlayersPanelOpen || shopPanelOpen || communityPanelOpen) && !syncing && snap.profileLoaded && (showInformationPanels || (tutorialGuideActive && inventoryPanelOpen)) ? 'flex' : 'none'
           }}
           uiBackground={{ color: { r: 0.015, g: 0.025, b: 0.075, a: 0.98 } }}
@@ -2493,20 +2641,6 @@ function applyHudRenderer(): void {
                     onMouseDown={() => {
                       clickFlash(`inventory-object-${slot.index}`)
                       if (!artifact) return
-                      if (tutorialGuideActive) {
-                        const action = currentTutorialAction()
-                        if (action !== 'ARTIFACT_1' && action !== 'ARTIFACT_2' && action !== 'COMPLETE') return
-                        const emptyTutorialSlot = tutorialEquippedArtifacts.findIndex((item) => !item)
-                        const tutorialSlotIndex = emptyTutorialSlot >= 0 ? emptyTutorialSlot : tutorialEquippedArtifacts.length
-                        if (tutorialSlotIndex >= 2) return
-                        const stackCount = tutorialArtifactCount(artifact)
-                        if (stackCount <= 0) return
-                        tutorialArtifactInventoryCounts[artifact] = 0
-                        tutorialEquippedArtifacts[tutorialSlotIndex] = artifact
-                        tutorialEquippedArtifactCounts[tutorialSlotIndex] = stackCount
-                        if (action !== 'COMPLETE') completeTutorialGuideAction(action)
-                        return
-                      }
                       artifactDetail = artifact
                     }}
                   >
@@ -2590,7 +2724,7 @@ function applyHudRenderer(): void {
 
           <UiEntity uiTransform={{ width: '100%', height: compactUi ? 796 : 568, flexDirection: 'column', display: shopPanelOpen ? 'flex' : 'none' }}>
             <Label
-              value={inBuild ? 'SHOP LOCKED DURING ACTIVE BUILD' : 'BUY ARTIFACTS TO YOUR INVENTORY'}
+              value={inBuild ? 'SHOP LOCKED DURING ACTIVE BUILD' : 'AUTO-EQUIP IF A SLOT IS AVAILABLE'}
               fontSize={font(compactUi ? 36 : 28)}
               color={inBuild ? { r: 1, g: 0.55, b: 0.25, a: 1 } : { r: 0.35, g: 0.95, b: 1, a: 1 }}
               uiTransform={{ width: '100%', height: compactUi ? 76 : 72 }}
@@ -2800,7 +2934,9 @@ function applyHudRenderer(): void {
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
-            display: inventoryPanelOpen && artifactDetail !== null && !tutorialGuideActive ? 'flex' : 'none'
+            zIndex: 1001,
+            pointerFilter: 'block',
+            display: inventoryPanelOpen && artifactDetail !== null ? 'flex' : 'none'
           }}
           uiBackground={{ color: { r: 0.01, g: 0.018, b: 0.045, a: 0.96 } }}
         >
@@ -2854,15 +2990,28 @@ function applyHudRenderer(): void {
             />
             <UiEntity
               uiTransform={{ width: '40%', height: '84%', alignItems: 'center', justifyContent: 'center' }}
-              uiBackground={{ color: detailArtifactInventoryIndex >= 0
+              uiBackground={{ color: detailArtifactCanEquip
                 ? { r: 0.05, g: 0.52, b: 0.44, a: 1 }
                 : { r: 0.18, g: 0.18, b: 0.22, a: 0.86 }
               }}
               onMouseDown={() => {
-                if (detailArtifactInventoryIndex < 0) return
+                if (!artifactDetail || !detailArtifactCanEquip) return
                 clickFlash('artifact-detail-equip')
-                requestEquipArtifact(detailArtifactInventoryIndex)
-                artifactDetail = null
+                if (tutorialGuideActive) {
+                  if (detailTutorialSlot === undefined) return
+                  const artifact = artifactDetail
+                  const stackCount = tutorialArtifactCount(artifact)
+                  if (stackCount <= 0) return
+                  tutorialArtifactInventoryCounts[artifact] = 0
+                  tutorialEquippedArtifacts[detailTutorialSlot] = artifact
+                  tutorialEquippedArtifactCounts[detailTutorialSlot] = stackCount
+                  artifactDetail = null
+                  const action = currentTutorialAction()
+                  if (action === 'ARTIFACT_1' || action === 'ARTIFACT_2') completeTutorialGuideAction(action)
+                } else {
+                  requestEquipArtifact(detailArtifactInventoryIndex)
+                  artifactDetail = null
+                }
               }}
             >
               <Label value='EQUIP' fontSize={font(compactUi ? 34 : 17)} color={{ r: 1, g: 1, b: 1, a: 1 }} uiTransform={{ width: '100%', height: '100%' }} textAlign='middle-center' />
@@ -3122,7 +3271,37 @@ function applyHudRenderer(): void {
               uiTransform={{ width: '100%', height: '100%' }}
               textAlign='middle-center'
             />
+            <UiEntity
+              uiTransform={{ positionType: 'absolute', position: { top: 0, left: 0 }, width: '100%', height: '100%', pointerFilter: 'none', display: tutorialCompleteVisible && tutorialReadyPulse ? 'flex' : 'none' }}
+              uiBackground={{ color: { r: 0.55, g: 1, b: 0.85, a: 0.75 } }}
+            />
             {clickFlashOverlay('tutorial-next')}
+          </UiEntity>
+        </UiEntity>
+        <UiEntity
+          uiTransform={{
+            positionType: 'absolute',
+            position: { top: 0, left: 0 },
+            width: '100%',
+            height: '100%',
+            alignItems: 'center',
+            justifyContent: 'center',
+            pointerFilter: 'none',
+            zIndex: 800,
+            display: tutorialCompleteVisible && !inventoryPanelOpen && !shopPanelOpen ? 'flex' : 'none'
+          }}
+        >
+          <UiEntity
+            uiTransform={{ width: compactUi ? 720 : 450, height: compactUi ? 92 : 58, alignItems: 'center', justifyContent: 'center', opacity: tutorialReadyPulse }}
+            uiBackground={{ color: { r: 0.01, g: 0.08, b: 0.12, a: 0.88 } }}
+          >
+            <Label
+              value='PRESS READY TO START'
+              fontSize={font(compactUi ? 40 : 24)}
+              color={{ r: 0.24, g: 1, b: 0.8, a: 1 }}
+              uiTransform={{ width: '100%', height: '100%' }}
+              textAlign='middle-center'
+            />
           </UiEntity>
         </UiEntity>
         <UiEntity
@@ -3267,7 +3446,7 @@ function applyHudRenderer(): void {
             const artifact = displayedEquippedArtifacts[slot.index]
             const artifactCount = artifact ? displayedEquippedArtifactCount(snap, slot.index, tutorialGuideActive) : 0
             const activeType = tutorialGuideActive ? localTimedArtifactTypes[slot.index]
-              : snap.activeArtifactSlot === slot.index ? (snap.noCooldownUntil > Date.now() ? 'NO_COOLDOWN' : snap.doublePlaceUntil > Date.now() ? 'DOUBLE_PLACE' : undefined) : undefined
+              : snap.activeArtifactSlot === slot.index ? (snap.noCooldownUntil > Date.now() ? 'NO_COOLDOWN' : snap.doublePlaceUntil > Date.now() ? 'DOUBLE_PLACE' : snap.autoPlaceUntil > Date.now() ? 'COMPLETE_TEMPLATE' : undefined) : undefined
             const activeFallback = timedArtifactUntil(snap, activeType, slot.index, tutorialGuideActive) > 0 ? activeType : undefined
             const visibleArtifact = activeFallback ?? artifact
             const activePct = timedArtifactPct(snap, visibleArtifact, slot.index, tutorialGuideActive)
@@ -3455,19 +3634,11 @@ function applyHudRenderer(): void {
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'flex-start',
-            display: isPlaying && phase === 'BUILD_COMPLETE' && snap.resolved && !snap.isStale ? 'flex' : 'none'
+            display: roundSummaryAvailable && !roundSummaryHidden ? 'flex' : 'none'
           }}
           uiBackground={roundSummaryPanelImage(compactUi)}
         >
-          <UiEntity
-            uiTransform={{
-              positionType: 'absolute',
-              position: { top: 0, left: 0 },
-              width: '100%',
-              height: '100%'
-            }}
-            uiBackground={roundSummaryPanelImage(compactUi)}
-          />
+
           <Label
             value=''
             fontSize={font(compactUi ? 68 : 68)}
@@ -3480,23 +3651,15 @@ function applyHudRenderer(): void {
           <UiEntity uiTransform={{ width: compactUi ? '92%' : '94%', height: compactUi ? 158 : 154, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', margin: { bottom: compactUi ? 2 : 0 } }}>
             <UiEntity uiTransform={{ width: compactUi ? '57%' : '56%', height: '100%', flexDirection: 'row', alignItems: 'center' }}>
               <UiEntity
-                uiTransform={{
-                  positionType: 'absolute',
-                  position: { top: compactUi ? -7 : -8, left: 0 },
-                  width: '100%',
-                  height: compactUi ? 174 : 170
-                }}
+                uiTransform={{ positionType: 'absolute', position: { top: compactUi ? -7 : -8, left: 0 }, width: '100%', height: compactUi ? 174 : 170 }}
                 uiBackground={uiImage(compactUi ? 'panel_jugador_Movil-89.png' : 'panel_jugador_Desktop.png')}
               />
               <UiEntity
-                uiTransform={{
-                  width: compactUi ? 117 : 104,
-                  height: compactUi ? 189 : 172,
-                  margin: { left: compactUi ? 18 : 16, right: compactUi ? 21 : 22 }
-                }}
-                uiBackground={avatarBackground(snap.playerAddress, 'body')}
+                key={`summary-body-${snap.playerAddress}-${avatarSnapshots.get(snap.playerAddress.toLowerCase())?.body ?? 'pending'}`}
+                uiTransform={{ zIndex: 2, flexShrink: 0, width: compactUi ? 117 : 104, height: compactUi ? 189 : 172, margin: { left: compactUi ? 18 : 16, right: compactUi ? 21 : 22 } }}
+                uiBackground={{ ...avatarBackground(snap.playerAddress, 'body'), color: { r: 1, g: 1, b: 1, a: 1 }, textureMode: 'stretch' }}
               />
-              <UiEntity uiTransform={{ width: '68%', height: '100%', flexDirection: 'column', justifyContent: 'center' }}>
+              <UiEntity uiTransform={{ zIndex: 2, width: '68%', height: '100%', flexDirection: 'column', justifyContent: 'center' }}>
                 <Label value={`YOU: ${snap.roundPoints} PTS`} fontSize={font(compactUi ? 40 : 28)} color={{ r: 0.2, g: 1, b: 0.85, a: 1 }} uiTransform={compactUi
                   ? { positionType: 'absolute', position: { top: -4, right: -85 }, width: 420, height: 40 }
                   : { width: '100%', height: '25%' }} textAlign={compactUi ? 'middle-right' : 'middle-left'} />
@@ -3593,6 +3756,13 @@ function applyHudRenderer(): void {
           />
         </UiEntity>
 
+        <UiEntity
+          uiTransform={{ positionType: 'absolute', position: { top: compactUi ? 122 : 272, left: compactUi ? 1673 : 1448 }, width: compactUi ? 140 : 100, height: compactUi ? 54 : 38, zIndex: 30, display: roundSummaryAvailable ? 'flex' : 'none' }}
+          uiBackground={{ color: { r: 0.02, g: 0.16, b: 0.18, a: 1 } }}
+          onMouseDown={() => { roundSummaryHidden = !roundSummaryHidden; playPress() }}
+        >
+          <Label value={roundSummaryHidden ? 'SHOW' : 'HIDE'} fontSize={font(compactUi ? 26 : 18)} color={{ r: 1, g: 1, b: 1, a: 1 }} uiTransform={{ width: '100%', height: '100%' }} textAlign='middle-center' />
+        </UiEntity>
         {/* Cinematic overlay */}
         <UiEntity uiTransform={{ positionType: 'absolute', position: { top: 0, left: 0 }, width: '100%', height: '100%', display: inCinematic && isCinematicViewer ? 'flex' : 'none' }}>
 
@@ -3819,9 +3989,6 @@ function applyHudRenderer(): void {
     )
   }, { virtualWidth: 1920, virtualHeight: 1080 })
 }
-
-
-
 
 
 

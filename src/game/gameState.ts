@@ -1,4 +1,6 @@
 import { engine, Transform } from '@dcl/sdk/ecs'
+import { LeaderboardReceiver } from '../shared/leaderboardTransport'
+const leaderboardReceiver = new LeaderboardReceiver()
 import { room } from '../shared/alienMessages'
 import { ArtifactType, HEARTBEAT_SECONDS, PlacementMode, RoundPhase, STALE_THRESHOLD_MS } from '../shared/constants'
 
@@ -29,6 +31,7 @@ export interface LeaderboardPlayer {
 }
 
 export interface PersistentLeaderboards {
+  storageAvailable?: boolean
   daily: LeaderboardPlayer[]
   weekly: LeaderboardPlayer[]
   total: LeaderboardPlayer[]
@@ -100,6 +103,7 @@ export interface ClientSnapshot {
   noCooldownUntil: number
   activeArtifactSlot: number
   doublePlaceUntil: number
+  autoPlaceUntil: number
   leaderboards: PersistentLeaderboards
   leaderboardsLoading: boolean
   cinematicEligible: boolean
@@ -158,6 +162,7 @@ function emptySnapshot(): ClientSnapshot {
     noCooldownUntil: 0,
     activeArtifactSlot: -1,
     doublePlaceUntil: 0,
+    autoPlaceUntil: 0,
     leaderboards: {
       daily: [],
       weekly: [],
@@ -296,14 +301,15 @@ export function isArtifactUsePending(): boolean {
   return Date.now() < artifactUsePendingUntil
 }
 
-function confirmedArtifactState(data: { serverTime: number; activeArtifactSlot: number; noCooldownUntil: number; doublePlaceUntil: number }) {
+function confirmedArtifactState(data: { serverTime: number; activeArtifactSlot: number; noCooldownUntil: number; doublePlaceUntil: number; autoPlaceUntil: number }) {
   if (!Number.isFinite(data.serverTime) || data.serverTime <= 0 || data.serverTime < lastArtifactServerTime) {
-    return { noCooldownUntil: snapshot.noCooldownUntil, doublePlaceUntil: snapshot.doublePlaceUntil, activeArtifactSlot: snapshot.activeArtifactSlot }
+    return { noCooldownUntil: snapshot.noCooldownUntil, doublePlaceUntil: snapshot.doublePlaceUntil, autoPlaceUntil: snapshot.autoPlaceUntil, activeArtifactSlot: snapshot.activeArtifactSlot }
   }
   lastArtifactServerTime = data.serverTime
   return {
     noCooldownUntil: localEffectDeadline('NO_COOLDOWN', data.noCooldownUntil, data.serverTime),
     doublePlaceUntil: localEffectDeadline('DOUBLE_PLACE', data.doublePlaceUntil, data.serverTime),
+    autoPlaceUntil: localEffectDeadline('COMPLETE_TEMPLATE', data.autoPlaceUntil, data.serverTime),
     activeArtifactSlot: data.activeArtifactSlot
   }
 }
@@ -357,7 +363,10 @@ export function initGameState(): void {
 
   room.onMessage('leaderboardUpdate', (data) => {
     try {
-      const parsed = JSON.parse(data.rankingsJson) as PersistentLeaderboards
+      const parsed = leaderboardReceiver.receive(data.rankingsJson) as PersistentLeaderboards | undefined
+      if (!parsed) return
+      if (!Array.isArray(parsed.total) || !Number.isFinite(parsed.generatedAt)) throw new Error('Invalid leaderboard')
+      if (parsed.generatedAt < snapshot.leaderboards.generatedAt) return
       snapshot = { ...snapshot, leaderboards: parsed, leaderboardsLoading: false }
     } catch (_) {
       snapshot = { ...snapshot, leaderboardsLoading: false }
@@ -476,10 +485,20 @@ export function requestLeaveGame(): void {
   forceSpectator('player_request')
 }
 
+const LEADERBOARD_REQUEST_TIMEOUT_MS = 10000
+let leaderboardRequestStartedAt = 0
+let leaderboardRequestId = 0
+
 export function requestLeaderboards(): void {
-  if (snapshot.leaderboardsLoading) return
+  if (!snapshot.resolved || !isPlayerInsideScene()) return
+  const now = Date.now()
+  if (snapshot.leaderboardsLoading && now - leaderboardRequestStartedAt < LEADERBOARD_REQUEST_TIMEOUT_MS) return
+  const requestId = ++leaderboardRequestId
+  leaderboardRequestStartedAt = now
   snapshot = { ...snapshot, leaderboardsLoading: true }
-  void room.send('requestLeaderboards', { requested: true })
+  void room.send('requestLeaderboards', { requested: true }).catch(() => {
+    if (requestId === leaderboardRequestId) snapshot = { ...snapshot, leaderboardsLoading: false }
+  })
 }
 
 export function gameStateSystem(dt: number): void {
@@ -487,11 +506,12 @@ export function gameStateSystem(dt: number): void {
     heartbeatAccumulator = 0
     return
   }
+  if (snapshot.leaderboardsLoading && Date.now() - leaderboardRequestStartedAt >= LEADERBOARD_REQUEST_TIMEOUT_MS) {
+    snapshot = { ...snapshot, leaderboardsLoading: false }
+    requestLeaderboards()
+  }
   heartbeatAccumulator += dt
   if (heartbeatAccumulator < HEARTBEAT_SECONDS) return
   heartbeatAccumulator = 0
   void room.send('heartbeat', { active: true })
 }
-
-
-

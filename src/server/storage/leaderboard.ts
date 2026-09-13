@@ -1,4 +1,5 @@
 import { Storage } from '@dcl/sdk/server'
+import { readLeaderboardPage } from './leaderboardRead'
 import { getLevelProgress } from '../../shared/progression'
 import { PlayerProfileV1 } from './playerProfile'
 
@@ -47,6 +48,7 @@ export interface LeaderboardEntry {
 }
 
 export interface LeaderboardSnapshot {
+  storageAvailable: boolean
   daily: LeaderboardEntry[]
   weekly: LeaderboardEntry[]
   total: LeaderboardEntry[]
@@ -150,6 +152,7 @@ function normalizeRecord(raw: unknown, address = '', displayName = '', knownTota
 }
 
 export class GlobalLeaderboardStore {
+  private lastListedRecords = new Map<string, LeaderboardRecordV1>()
   private readonly cache = new Map<string, LeaderboardRecordV1>()
   private readonly dirty = new Set<string>()
   private readonly revisions = new Map<string, number>()
@@ -319,11 +322,21 @@ export class GlobalLeaderboardStore {
 
   async getSnapshot(limit = 10): Promise<LeaderboardSnapshot> {
     const records = new Map<string, LeaderboardRecordV1>()
+    let storageAvailable = true
 
     try {
       let offset = 0
       while (offset < MAX_RECORDS) {
-        const result = await Storage.getValues({ prefix: LEADERBOARD_PREFIX, limit: PAGE_SIZE, offset })
+        const readPage = async () => {
+          for (let attempt = 1; ; attempt++) {
+            try {
+              return await readLeaderboardPage(LEADERBOARD_PREFIX, PAGE_SIZE, offset)
+            } catch (error) {
+              if (attempt >= LOAD_ATTEMPTS) throw error
+            }
+          }
+        }
+        const result = await readPage()
         for (const item of result.data) {
           const record = normalizeRecord(item.value)
           if (record) records.set(record.wallet, record)
@@ -331,8 +344,14 @@ export class GlobalLeaderboardStore {
         offset += result.data.length
         if (result.data.length === 0 || offset >= result.pagination.total) break
       }
+      this.lastListedRecords = new Map(records)
     } catch (error) {
+      storageAvailable = false
       console.error(`[LEADERBOARD] list failed error=${error}`)
+      // A temporary read failure must not erase previously loaded remote players.
+      for (const [address, previous] of this.lastListedRecords) {
+        if (!records.has(address)) records.set(address, previous)
+      }
     }
 
     for (const [address, cached] of this.cache) records.set(address, { ...cached })
@@ -380,6 +399,7 @@ export class GlobalLeaderboardStore {
     )
 
     return {
+      storageAvailable,
       daily: rank(
         (record) => record.dailyKey === today ? record.dailyPoints : 0,
         (record) => record.dailyKey === today ? record.dailyRounds : 0,

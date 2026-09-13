@@ -1,6 +1,6 @@
 // Timing
 export const BUILD_DURATION_SECONDS = 60
-export const BUILD_COMPLETE_SECONDS = 15
+export const BUILD_COMPLETE_SECONDS = 10
 export const COUNTDOWN_SECONDS = 1
 export const PERFORMANCE_DURATION_SECONDS = 2
 export const RESET_DELAY_SECONDS = 0
@@ -64,8 +64,8 @@ export const ARTIFACT_USES_PER_ROUND = 2
 export const ARTIFACT_PRICE_CRYSTALS: Record<ArtifactType, number> = {
   DOUBLE_PLACE: 40,
   TRIPLE_PLACE: 60,
-  NO_COOLDOWN: 80,
-  COMPLETE_TEMPLATE: 100
+  NO_COOLDOWN: 100,
+  COMPLETE_TEMPLATE: 80
 }
 export const ARTIFACT_DURATION_MS = 10000
 export type ArtifactType = 'NO_COOLDOWN' | 'DOUBLE_PLACE' | 'TRIPLE_PLACE' | 'COMPLETE_TEMPLATE'
@@ -74,7 +74,7 @@ export const ARTIFACT_LABEL: Record<ArtifactType, string> = {
   NO_COOLDOWN: 'No Cooldown',
   DOUBLE_PLACE: 'Double Place',
   TRIPLE_PLACE: 'Triple Place',
-  COMPLETE_TEMPLATE: 'Complete Template'
+  COMPLETE_TEMPLATE: 'Auto Builder'
 }
 
 export type DifficultyTier = 'SOLO' | 'SMALL_GROUP' | 'SOCIAL_GROUP'

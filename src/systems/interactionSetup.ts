@@ -169,6 +169,12 @@ function partRotation(part: PartType): Quaternion {
   return part === 'CONE' ? Quaternion.fromEulerDegrees(180, 0, 0) : Quaternion.Identity()
 }
 
+// The opaque pyramid GLB is authored upside down, while MeshRenderer's cone is not.
+// Placeholder geometry must keep its own orientation during the placement transition.
+function placeholderRotation(): Quaternion {
+  return Quaternion.Identity()
+}
+
 function trackEntity(entity: Entity): Entity {
   visualEntities.add(entity)
   return entity
@@ -251,7 +257,7 @@ function createGhost(slot: SlotDefinition): Entity {
   Transform.create(entity, {
     position: slotPosition(slot),
     scale: Vector3.scale(slotScale(slot), 2),
-    rotation: partRotation(slot.requiredPart)
+    rotation: placeholderRotation()
   })
 
   if (slot.requiredPart === 'CUBE') MeshRenderer.setBox(entity)
@@ -335,30 +341,6 @@ function schedulePlacementImpact(slot: SlotDefinition): void {
   setTimeout(() => {
     flashSlot(slot, Color4.create(0.2, 1, 0.85, 1))
   }, PLACEMENT_IMPACT_DELAY_MS)
-}
-
-function createOtherPlayerDim(slot: SlotDefinition): void {
-  const basePosition = slotPosition(slot)
-  const baseScale = slotScale(slot)
-  const overlay = trackEntity(engine.addEntity())
-  Transform.create(overlay, {
-    position: Vector3.create(basePosition.x, basePosition.y + baseScale.y * 0.05, basePosition.z),
-    scale: Vector3.create(baseScale.x * 2.1, baseScale.y * 2.1, baseScale.z * 2.1),
-    rotation: partRotation(slot.requiredPart)
-  })
-
-  if (slot.requiredPart === 'CUBE') MeshRenderer.setBox(overlay)
-  else if (slot.requiredPart === 'CYLINDER') MeshRenderer.setCylinder(overlay)
-  else MeshRenderer.setCylinder(overlay, 0, 0.5)
-
-  Material.setPbrMaterial(overlay, {
-    albedoColor: Color4.create(0.015, 0.02, 0.04, 0.58),
-    transparencyMode: MaterialTransparencyMode.MTM_ALPHA_BLEND,
-    emissiveColor: Color4.create(0, 0.04, 0.08, 1),
-    emissiveIntensity: 0.2,
-    metallic: 0,
-    roughness: 0.85
-  })
 }
 
 function flashSlot(slot: SlotDefinition, color: Color4): void {
@@ -510,7 +492,6 @@ export function reconcileScene(): void {
   for (let index = 0; index < slots.length; index++) {
     const slot = slots[index]
     const occupied = ((snapshot.occupiedMask >> index) & 1) === 1
-    const owned = ((snapshot.ownOccupiedMask >> index) & 1) === 1
     const newlyOwned = ((newlyOwnedMask >> index) & 1) === 1
     if (occupied) {
       const revealDelayMs = newlyOwned && snapshot.playerStatus === 'ACTIVE' ? PLACEMENT_IMPACT_DELAY_MS : 0
@@ -522,9 +503,6 @@ export function reconcileScene(): void {
           spawnPlacementLaunch(slot)
           schedulePlacementImpact(slot)
         }
-      }
-      if (snapshot.phase === 'BUILD' && snapshot.playerStatus === 'ACTIVE') {
-        if (!owned) createOtherPlayerDim(slot)
       }
     } else if (showAvailableSlots) {
       createGhost(slot)

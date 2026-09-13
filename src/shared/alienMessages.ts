@@ -43,7 +43,8 @@ export const Messages = {
     serverTime: Schemas.Double,
     activeArtifactSlot: Schemas.Int,
     noCooldownUntil: Schemas.Double,
-    doublePlaceUntil: Schemas.Double
+    doublePlaceUntil: Schemas.Double,
+    autoPlaceUntil: Schemas.Double
   }),
 
   // Targeted player status.
@@ -77,7 +78,8 @@ export const Messages = {
     noCooldownUntil: Schemas.Double,
     serverTime: Schemas.Double,
     activeArtifactSlot: Schemas.Int,
-    doublePlaceUntil: Schemas.Double
+    doublePlaceUntil: Schemas.Double,
+    autoPlaceUntil: Schemas.Double
   }),
 
   leaderboardUpdate: Schemas.Map({

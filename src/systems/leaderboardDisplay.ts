@@ -20,6 +20,9 @@ import { getClientSnapshot, requestLeaderboards, LeaderboardPlayer } from '../ga
 const DISPLAY_POSITION = Vector3.create(-4.9, 10.25, -8.85)
 const DISPLAY_ROTATION = Quaternion.fromEulerDegrees(0, 200, 0)
 const DISPLAY_SCALE = 4
+const PANEL_Z = 0.12
+// Four centimetres in world space: prevent depth fighting with minimal parallax.
+const CONTENT_Z = PANEL_Z - 0.01
 const REFRESH_SECONDS = 18
 const ROWS = 5
 const NAME_TEXT_SCALE = 1.65
@@ -152,7 +155,7 @@ function createText(
   const entity = track(engine.addEntity())
   Transform.create(entity, {
     parent: displayRoot,
-    position: Vector3.create(x, y, -0.22),
+    position: Vector3.create(x, y, CONTENT_Z),
     rotation: Quaternion.Identity(),
     scale: Vector3.One()
   })
@@ -168,11 +171,11 @@ function createText(
     textWrapping: false,
     textColor: color,
     outlineColor: Color3.create(0, 0, 0),
-    outlineWidth: 0.22,
+    outlineWidth: 0.06,
     shadowColor: Color3.create(0, 0, 0),
-    shadowBlur: 0.28,
-    shadowOffsetX: 0.08,
-    shadowOffsetY: -0.08
+    shadowBlur: 0,
+    shadowOffsetX: 0,
+    shadowOffsetY: 0
   })
 }
 
@@ -185,13 +188,14 @@ function createPanel(x: number, y: number, width: number, height: number, color:
   const entity = track(engine.addEntity())
   Transform.create(entity, {
     parent: displayRoot,
-    position: Vector3.create(x, y, 0.02),
+    position: Vector3.create(x, y, PANEL_Z),
     rotation: Quaternion.Identity(),
     scale: Vector3.create(width, height, 1)
   })
   MeshRenderer.setPlane(entity)
   Material.setBasicMaterial(entity, {
-    diffuseColor: color,
+    // One opaque, unlit surface keeps the whole ranking readable.
+    diffuseColor: Color4.create(color.r, color.g, color.b, 1),
     castShadows: false
   })
 }
@@ -208,9 +212,9 @@ function createHitbox(
   const entity = track(engine.addEntity())
   Transform.create(entity, {
     parent: displayRoot,
-    position: Vector3.create(x, y, -0.34),
+    position: Vector3.create(x, y, CONTENT_Z - 0.02),
     rotation: Quaternion.Identity(),
-    scale: Vector3.create(width, height, 0.12)
+    scale: Vector3.create(width, height, 0.02)
   })
   MeshCollider.setBox(entity, ColliderLayer.CL_POINTER)
   pointerEventsSystem.onPointerDown(
@@ -232,7 +236,7 @@ function createAvatar(address: string | undefined, x: number, y: number): void {
   const entity = track(engine.addEntity())
   Transform.create(entity, {
     parent: displayRoot,
-    position: Vector3.create(x, y, -0.24),
+    position: Vector3.create(x, y, CONTENT_Z),
     rotation: Quaternion.Identity(),
     scale: Vector3.create(0.4, 0.4, 1)
   })
@@ -350,18 +354,18 @@ function columnsForMode(): ColumnDefinition[] {
   }
 }
 
-function render(rows: LeaderboardPlayer[]): void {
+function render(rows: LeaderboardPlayer[], sessionFallback = false, emptyMessage = 'No ranking data yet'): void {
   clearDisplay()
   createRoot()
   const columns = columnsForMode()
   createHitbox(-0.1, 0.5, 3.95, 3.05, 'View leaderboard', () => {
     if (getClientSnapshot().playerStatus === 'SPECTATOR') setLeaderboardCamera(true)
   })
-  createPanel(-1.85, 1.92, 0.34, 0.26, Color4.create(0.01, 0.1, 0.12, 0.88))
-  createPanel(1.62, 1.92, 0.34, 0.26, Color4.create(0.01, 0.1, 0.12, 0.88))
+  createPanel(-0.1, 0.55, 4.2, 3.65, Color4.create(0.01, 0.02, 0.045, 1))
   createText('<', -1.85, 1.93, 0.52, Color4.create(0.35, 1, 1, 1), 0.3, HEADER_TEXT_SCALE)
   createText('>', 1.62, 1.93, 0.52, Color4.create(0.35, 1, 1, 1), 0.3, HEADER_TEXT_SCALE)
   createText(currentMode(), -0.1, 1.93, 0.46, Color4.create(1, 0.9, 0.22, 1), 1.6, HEADER_TEXT_SCALE)
+  if (sessionFallback) createText('SESSION DATA', -0.1, 2.19, 0.2, Color4.create(1, 0.9, 0.22, 1), 3.7, 1)
   createHitbox(-1.85, 1.92, 0.42, 0.34, 'Previous ranking', () => {
     if (getClientSnapshot().playerStatus === 'SPECTATOR') stepMode(-1)
   })
@@ -370,11 +374,10 @@ function render(rows: LeaderboardPlayer[]): void {
   })
 
   if (rows.length === 0) {
-    createText('No ranking data yet', -0.25, 1.25, 1.05, Color4.create(0.95, 0.98, 1, 1), 3.4)
+    createText(emptyMessage, -0.25, 1.25, 1.05, Color4.create(0.95, 0.98, 1, 1), 3.4)
     return
   }
 
-  createPanel(-0.1, 1.62, 3.75, 0.42, Color4.create(0.01, 0.05, 0.08, 0.74))
   createText('NAME', -1.34, 1.63, 0.82, Color4.create(0.35, 1, 1, 1), 1.1, HEADER_TEXT_SCALE, TEXT_ALIGN_MIDDLE_LEFT)
   for (const column of columns) {
     createText(column.label, column.x, 1.63, 0.74, Color4.create(0.35, 1, 1, 1), column.width, HEADER_TEXT_SCALE)
@@ -385,10 +388,6 @@ function render(rows: LeaderboardPlayer[]): void {
     const rankColor = index === 0
       ? Color4.create(1, 0.9, 0.22, 1)
       : Color4.create(0.95, 0.98, 1, 1)
-    createPanel(-0.1, y, 3.75, 0.44, index === 0
-      ? Color4.create(0.26, 0.18, 0.02, 0.88)
-      : Color4.create(0.01, 0.02, 0.06, index % 2 === 0 ? 0.78 : 0.62)
-    )
     createAvatar(player.address, -1.55, y + 0.08)
     createText(clippedName(player.name), -1.34, y + 0.04, 0.77, rankColor, 1.1, NAME_TEXT_SCALE, TEXT_ALIGN_MIDDLE_LEFT)
     for (const column of columns) {
@@ -417,26 +416,17 @@ export function leaderboardDisplaySystem(dt: number): void {
   }
 
   const selectedRows = leaderboardRows(snapshot)
-  const rows = selectedRows.length > 0
-    ? selectedRows
-    : snapshot.players.map((player) => ({
-      name: player.name,
-      points: player.sessionPoints,
-      level: player.level,
-      rounds: player.rounds,
-      mvps: player.mvps,
-      pieces: player.correctPieces,
-      perfects: 0,
-      excellence: player.rounds > 0 ? Math.round(player.sessionPoints / player.rounds) : 0,
-      dominance: player.rounds > 0 ? Math.round((player.mvps / player.rounds) * 100) : 0
-    }))
-  const key = `${currentMode()}:${snapshot.leaderboards.generatedAt}:${rows.map(playerKey).join(';')}`
+  const rows = selectedRows
+  const sessionFallback = false
+  const emptyMessage = snapshot.leaderboards.storageAvailable === false ? 'Ranking unavailable - retrying'
+    : snapshot.leaderboards.generatedAt === 0 ? 'Loading ranking...'
+    : 'No ranking data yet'
+  const key = `${currentMode()}:${emptyMessage}:${sessionFallback}:${snapshot.leaderboards.generatedAt}:${rows.map(playerKey).join(';')}`
   if (key === displayKey) return
   displayKey = key
-  render(rows)
+  render(rows, sessionFallback, emptyMessage)
 }
 
 export function isLeaderboardCameraActive(): boolean {
   return cameraActive
 }
-

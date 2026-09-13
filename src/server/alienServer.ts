@@ -1,3 +1,5 @@
+import { findAutoBuilderSlot, startAutoBuilder, stopAutoBuilder, takeAutoBuilderPlacements } from '../shared/autoBuilder'
+import { encodeLeaderboard } from '../shared/leaderboardTransport'
 import { AvatarBase, engine, Entity, PlayerIdentityData } from '@dcl/sdk/ecs'
 import { onLeaveScene } from '@dcl/sdk/players'
 import { RoundState, GameTimer } from '../components/alienComponents'
@@ -71,6 +73,9 @@ interface PlayerSession {
   noCooldownUntil: number
   activeArtifactSlot: number
   doublePlaceUntil: number
+  autoPlaceUntil: number
+  nextAutoPlaceAt: number
+  nextAutoPartIndex: number
   level: number
   roundsPlayed: number
   perfectBuilds: number
@@ -220,11 +225,10 @@ export function setupAlienServer(): void {
 
   room.onMessage('requestLeaderboards', async (_data, context) => {
     if (!context) return
-    const session = touchSession(context.from)
-    await ensureProfileLoaded(session)
-    await leaderboardStore.saveDirty()
     const rankings = await leaderboardStore.getSnapshot()
-    void room.send('leaderboardUpdate', { rankingsJson: JSON.stringify(rankings) }, { to: [session.address] })
+    for (const rankingsJson of encodeLeaderboard(rankings)) {
+      await room.send('leaderboardUpdate', { rankingsJson }, { to: [context.from] })
+    }
   })
 
   room.onMessage('buyArtifact', async (data, context) => {
@@ -253,7 +257,8 @@ export function setupAlienServer(): void {
         serverTime: Date.now(),
         activeArtifactSlot: session?.activeArtifactSlot ?? -1,
         noCooldownUntil: session?.noCooldownUntil ?? 0,
-        doublePlaceUntil: session?.doublePlaceUntil ?? 0
+        doublePlaceUntil: session?.doublePlaceUntil ?? 0,
+        autoPlaceUntil: session?.autoPlaceUntil ?? 0
       }, { to: [context.from] })
     }
   })
@@ -316,6 +321,9 @@ function createSession(address: string): PlayerSession {
     noCooldownUntil: 0,
     activeArtifactSlot: -1,
     doublePlaceUntil: 0,
+    autoPlaceUntil: 0,
+    nextAutoPlaceAt: 0,
+    nextAutoPartIndex: 0,
     level: 1,
     roundsPlayed: 0,
     perfectBuilds: 0,
@@ -349,6 +357,7 @@ function leaveCompetitiveSession(session: PlayerSession, reason: string): void {
   roundParticipants.delete(session.address)
   session.noCooldownUntil = 0
   session.doublePlaceUntil = 0
+  stopAutoBuilder(session)
   session.activeArtifactSlot = -1
   admitWaitingPlayerToEmptyBuild()
   updateCommunitySessionPresence()
@@ -386,6 +395,9 @@ async function ensureProfileLoaded(session: PlayerSession): Promise<void> {
     session.equippedArtifacts = [null, null]
     session.equippedArtifactCounts = [0, 0]
     profileStore.grantStarterArtifacts(session.address, session.artifactInventory)
+    autoEquipOwnedArtifact(session, 'NO_COOLDOWN')
+    autoEquipOwnedArtifact(session, 'DOUBLE_PLACE')
+    persistArtifacts(session)
     void profileStore.save(session.address)
   }
   session.roundsPlayed = profile.roundsPlayed
@@ -586,7 +598,8 @@ function sendPlayerUpdate(session: PlayerSession): void {
     noCooldownUntil: session.noCooldownUntil,
     serverTime: Date.now(),
     activeArtifactSlot: session.activeArtifactSlot,
-    doublePlaceUntil: session.doublePlaceUntil
+    doublePlaceUntil: session.doublePlaceUntil,
+    autoPlaceUntil: session.autoPlaceUntil
   }, { to: [session.address] })
 }
 
@@ -669,6 +682,7 @@ function admitWaitingPlayerToEmptyBuild(): void {
   if (joinCurrentBuildIfOpen(next, true)) {
     next.noCooldownUntil = 0
     next.doublePlaceUntil = 0
+    stopAutoBuilder(next)
     next.nextAttachAt = 0
     sendPlayerUpdate(next)
   }
@@ -738,6 +752,7 @@ function enterBuild(): void {
     session.artifactUsesThisRound = 0
     session.noCooldownUntil = 0
     session.doublePlaceUntil = 0
+    stopAutoBuilder(session)
   }
 
   currentDifficulty = difficultyForPlayers(players.length)
@@ -845,6 +860,7 @@ function enterBuildComplete(reason: 'perfect' | 'timeout'): void {
     if (!session) continue
     session.noCooldownUntil = 0
     session.doublePlaceUntil = 0
+    stopAutoBuilder(session)
   }
 
   const perfect = state.performanceType === 'PERFECT'
@@ -916,6 +932,17 @@ function sendArtifactResult(session: PlayerSession, ok: boolean, reason = ''): v
   void room.send('artifactResult', { ok, reason }, { to: [session.address] })
 }
 
+function autoEquipOwnedArtifact(session: PlayerSession, artifactType: ArtifactType): void {
+  let slotIndex = session.equippedArtifacts.findIndex((artifact) => artifact === artifactType)
+  if (slotIndex < 0) slotIndex = session.equippedArtifacts.findIndex((artifact) => !artifact)
+  if (slotIndex < 0) return
+  const stackCount = session.artifactInventory.filter((artifact) => artifact === artifactType).length
+  if (stackCount === 0) return
+  session.artifactInventory = session.artifactInventory.filter((artifact) => artifact !== artifactType)
+  session.equippedArtifacts[slotIndex] = artifactType
+  session.equippedArtifactCounts[slotIndex] = (session.equippedArtifactCounts[slotIndex] ?? 0) + stackCount
+}
+
 async function handleBuyArtifact(address: string, artifactValue: string): Promise<void> {
   const session = touchSession(address)
   await ensureProfileLoaded(session)
@@ -928,6 +955,7 @@ async function handleBuyArtifact(address: string, artifactValue: string): Promis
 
   session.crystals = profile.crystals
   session.artifactInventory.push(artifactType)
+  autoEquipOwnedArtifact(session, artifactType)
   persistArtifacts(session)
   sendArtifactResult(session, true)
   sendPlayerUpdate(session)
@@ -1012,16 +1040,36 @@ function useTriplePlaceArtifact(state: ReturnType<typeof RoundState.getMutable>,
   }
 }
 
-function useCompleteTemplateArtifact(state: ReturnType<typeof RoundState.getMutable>, session: PlayerSession): void {
-  for (let index = 0; index < TEMPLATES[state.templateId as TemplateId].length; index++) {
-    if (state.partsAttached >= state.partsRequired) return
-    const taken = ((state.occupiedMask ?? 0) & (1 << index)) !== 0
-    if (!taken) placeServerSlot(state, session, index, 'auto')
+function tickAutoBuilders(now: number): void {
+  let changed = false
+  for (const session of sessions.values()) {
+    if (session.nextAutoPlaceAt <= 0) continue
+    if (currentPhase !== 'BUILD' || buildCompletePending || !roundParticipants.has(session.address) || !session.joined || now - session.lastSeenAt > PLAYER_ONLINE_MS) {
+      stopAutoBuilder(session)
+      sendPlayerUpdate(session)
+      continue
+    }
+    const state = RoundState.getMutable(roundEntity)
+    const count = takeAutoBuilderPlacements(session, now)
+    for (let pulse = 0; pulse < count; pulse++) {
+      const index = findAutoBuilderSlot(session, (part) => findOpenSlotIndex(state, part))
+      if (index < 0) { stopAutoBuilder(session); break }
+      // Independent of lastAttachAt / nextAttachAt: manual placement keeps its cooldown.
+      placeServerSlot(state, session, index, 'auto')
+      changed = true
+      if (state.partsAttached >= state.partsRequired) {
+        stopAutoBuilder(session)
+        scheduleBuildComplete('perfect')
+        break
+      }
+    }
+    if (count > 0) sendPlayerUpdate(session)
   }
+  if (changed) broadcastState()
 }
 
 function hasActiveTimedArtifact(session: PlayerSession, now = Date.now()): boolean {
-  return now < Math.max(session.noCooldownUntil, session.doublePlaceUntil)
+  return now < Math.max(session.noCooldownUntil, session.doublePlaceUntil, session.autoPlaceUntil)
 }
 
 async function handleUseArtifact(address: string, slotIndex: number): Promise<void> {
@@ -1035,6 +1083,7 @@ async function handleUseArtifact(address: string, slotIndex: number): Promise<vo
   if (!artifactType || equippedCount <= 0) return sendArtifactResult(session, false, 'empty_slot')
 
   const now = Date.now()
+  tickAutoBuilders(now)
   if (hasActiveTimedArtifact(session, now)) return sendArtifactResult(session, false, 'artifact_active')
   if (index > 1 || !Number.isInteger(slotIndex) || slotIndex < 0 || buildCompletePending) return sendArtifactResult(session, false, 'not_active_build')
 
@@ -1060,8 +1109,8 @@ async function handleUseArtifact(address: string, slotIndex: number): Promise<vo
     useTriplePlaceArtifact(state, session)
     placedPieces = true
   } else if (artifactType === 'COMPLETE_TEMPLATE') {
-    useCompleteTemplateArtifact(state, session)
-    placedPieces = true
+    startAutoBuilder(session, now)
+    session.activeArtifactSlot = index
   }
 
   if (placedPieces) {
@@ -1143,7 +1192,10 @@ function serverTick(dt: number): void {
   }
 
   timerAccumulator += safeDt
-  if (timerAccumulator < 1) return
+  if (timerAccumulator < 1) {
+    tickAutoBuilders(Date.now())
+    return
+  }
   const elapsedSeconds = Math.floor(timerAccumulator)
   timerAccumulator -= elapsedSeconds
   pruneExpiredSessions()
@@ -1173,10 +1225,7 @@ function serverTick(dt: number): void {
     else if (currentPhase === 'RESET') enterBuild()
   }
 
+  tickAutoBuilders(Date.now())
   broadcastState()
 }
-
-
-
-
 
