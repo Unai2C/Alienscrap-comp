@@ -1164,7 +1164,7 @@ async function handleAttach(address: string, slotId: string, partType: string, m
     if (extraIndex >= 0) placeServerSlot(state, session, extraIndex, mode)
   }
 
-  void room.send('attachResult', { slotId, ok: true, reason: '', required: requiredPart }, { to: [session.address] })
+  void room.send('attachResult', { slotId, ok: true, reason: state.partsAttached >= state.partsRequired ? 'build_complete' : '', required: requiredPart }, { to: [session.address] })
   if (state.partsAttached >= state.partsRequired) scheduleBuildComplete('perfect')
   broadcastState()
 }
@@ -1228,4 +1228,3 @@ function serverTick(dt: number): void {
   tickAutoBuilders(Date.now())
   broadcastState()
 }
-

@@ -335,7 +335,8 @@ function createSolid(slot: SlotDefinition, index: number, revealDelayMs = 0): vo
   }
 }
 
-function schedulePlacementImpact(slot: SlotDefinition): void {
+function schedulePlacementImpact(slot: SlotDefinition, completesBuild: boolean): void {
+  if (completesBuild) return
   setTimeout(() => {
     flashSlot(slot, Color4.create(0.2, 1, 0.85, 1))
   }, PLACEMENT_IMPACT_DELAY_MS)
@@ -436,7 +437,7 @@ export function setupEntities(selectedPartProvider: () => PartType): void {
         const snapshot = getClientSnapshot()
         animatedPlacementKeys.add(placementAnimationKey(snapshot.roundNumber, snapshot.templateId, slot.slotId))
         spawnPlacementLaunch(slot)
-        schedulePlacementImpact(slot)
+        schedulePlacementImpact(slot, data.reason === 'build_complete')
       }
       return
     }
@@ -499,7 +500,7 @@ export function reconcileScene(): void {
         if (!animatedPlacementKeys.has(key)) {
           animatedPlacementKeys.add(key)
           spawnPlacementLaunch(slot)
-          schedulePlacementImpact(slot)
+          schedulePlacementImpact(slot, snapshot.partsAttached >= snapshot.partsRequired)
         }
       }
     } else if (showAvailableSlots) {
@@ -925,4 +926,3 @@ export function clearAllVisuals(): void {
   clearPlacementLaunches()
   renderedStateKey = ''
 }
-
