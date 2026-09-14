@@ -5,7 +5,9 @@ import {
 } from '@dcl/sdk/ecs'
 import { Color4, Quaternion, Vector3 } from '@dcl/sdk/math'
 import { movePlayerTo } from '~system/RestrictedActions'
-import { getPlayerData } from '~system/Players'
+// This optional client module is absent from the preview server runtime.
+// Resolve it inside the avatar request, never during shared bundle startup.
+declare const require: (module: '~system/Players') => typeof import('~system/Players')
 import { ReactEcsRenderer, UiEntity, Label, ReactEcs } from '@dcl/sdk/react-ecs'
 import {
   PART_TYPES, PART_GLB, PART_LABEL, PartType,
@@ -1629,7 +1631,7 @@ function loadAvatarSnapshot(address: string): void {
     void Promise.resolve().then(request).then(finish).catch(() => finish({}))
   }
   // Independent requests: a rejected or stalled native API must not block HTTP.
-  run(() => getPlayerData({ userId: address })
+  run(() => require('~system/Players').getPlayerData({ userId: address })
     .then((response) => snapshotUrls(response.data?.avatar)))
   run(() => fetch(`https://peer.decentraland.org/lambdas/profiles/${key}`)
     .then((result) => {
@@ -1752,8 +1754,11 @@ function tutorialArtifactCount(type: ArtifactType): number {
 }
 
 function displayedArtifactCount(snap: ReturnType<typeof getClientSnapshot>, artifact: ArtifactType, tutorialActive: boolean): number {
-  if (tutorialActive) return tutorialArtifactCount(artifact) + countArtifacts(tutorialEquippedArtifacts, artifact)
-  return countArtifacts(snap.artifactInventory, artifact) + countArtifacts(snap.equippedArtifacts, artifact)
+  const equipped = tutorialActive ? tutorialEquippedArtifacts : snap.equippedArtifacts
+  const counts = tutorialActive ? tutorialEquippedArtifactCounts : snap.equippedArtifactCounts
+  const inventoryCount = tutorialActive ? tutorialArtifactCount(artifact) : countArtifacts(snap.artifactInventory, artifact)
+  return inventoryCount + equipped.reduce((total, type, index) =>
+    total + (type === artifact ? Math.max(0, counts[index] ?? 0) : 0), 0)
 }
 
 function displayedEquippedArtifactCount(snap: ReturnType<typeof getClientSnapshot>, slotIndex: number, tutorialActive: boolean): number {
@@ -2466,7 +2471,9 @@ function applyHudRenderer(): void {
         <UiEntity
           uiTransform={{
             positionType: 'absolute',
-            position: { top: expandedPanelTop, right: expandedPanelRight },
+            position: { top: expandedPanelTop, right: shopPanelOpen
+              ? (compactUi ? expandedPanelRight + 171 : sidePanelRight + 136 + 10 + 108 + 8)
+              : expandedPanelRight },
             width: compactUi ? 1120 : shopPanelOpen ? 1200 : 680,
             height: activePlayersPanelOpen ? (compactUi ? 640 : 420) : shopPanelOpen ? (compactUi ? 940 : 660) : artifactPanelOpen ? (compactUi ? 940 : 500) : profilePanelOpen ? (compactUi ? 780 : 540) : communityPanelOpen ? (compactUi ? 640 : 420) : (compactUi ? 860 : 720),
             flexDirection: 'column',
@@ -3989,15 +3996,6 @@ function applyHudRenderer(): void {
     )
   }, { virtualWidth: 1920, virtualHeight: 1080 })
 }
-
-
-
-
-
-
-
-
-
 
 
 

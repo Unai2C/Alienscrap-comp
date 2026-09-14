@@ -328,11 +328,9 @@ function createSolid(slot: SlotDefinition, index: number, revealDelayMs = 0): vo
   })
 
   if (revealDelayMs > 0) {
-    const ghost = createGhost(slot)
     setTimeout(() => {
       if (!Transform.has(solid)) return
       Transform.getMutable(solid).scale = baseScale
-      if (visualEntities.delete(ghost)) engine.removeEntity(ghost)
     }, revealDelayMs)
   }
 }
@@ -927,5 +925,4 @@ export function clearAllVisuals(): void {
   clearPlacementLaunches()
   renderedStateKey = ''
 }
-
 
